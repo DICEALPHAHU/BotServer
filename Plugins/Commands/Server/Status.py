@@ -80,7 +80,7 @@ def read_mc_log(server_name: str) -> str:
         with open(log_file, "r", encoding=LOG_ENCODING, errors="ignore") as f:
             lines = f.readlines()
         # 取最后10行，避免读全文件
-        last_lines = lines[-LOG_READ_LINES:] if len(lines) >= 10 else lines
+        last_lines = lines[-10:] if len(lines) >= 10 else lines
         logger.success(f"服务器[{server_name}]成功读取日志最后{len(last_lines)}行")
         return "".join(last_lines)
     except Exception as e:
