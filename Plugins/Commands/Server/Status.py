@@ -271,7 +271,7 @@ def draw_chart(data: dict, tps_mspt_data: dict):
     if count > 0 and cpu_bars and ram_bars and tps_bars and mspt_bars:
         pyplot.legend((cpu_bars[0], ram_bars[0], tps_bars[0], mspt_bars[0]), labels, prop=font)
     pyplot.yticks([(i * 4) + 1.5 for i in range(len(names))], names, fontproperties=font)
-    pyplot.xlim(0, max(pyplot.xlim()[1], 70))  
+    pyplot.xlim(0, max(pyplot.xlim()[1], 100))  
     
     buffer = BytesIO()
     pyplot.savefig(buffer, format='png')
