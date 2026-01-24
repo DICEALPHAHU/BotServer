@@ -14,6 +14,21 @@ import json
 import random
 import asyncio  # 仅用内置的 asyncio 库
 
+# ======================戳一戳冷却配置 ======================
+POKE_COOLDOWN = 30  # 冷却时间，单位秒（建议10-30秒，可按需改）
+last_poke_time = 0  # 记录最后一次触发戳一戳的时间戳
+POKE_COOLDOWN_MSG = [
+    "别戳啦～我需要休息一下，稍后再试吧～",
+    "住手！再戳零件都要掉啦，等会儿再玩～",
+    "戳太快啦，Dream都没你手速快，稍等片刻～",
+    "别戳惹，让机器人充个能（×××），马上就好～",
+    "再戳我可要钻回下界门啦，30秒后再找我玩～",
+    "手速拉满了属于是，冷却中ing，稍等～",
+    "我的CPU要烧啦，缓一缓再戳～",
+    "暂停戳戳！正在加载MC冷知识，稍后解锁～",
+    "别戳了别戳了，再戳我就把你送进末地城～",
+    "冷却中！快去找点MC方块玩玩，马上就好～"
+]
 
 matcher = on_notice(rule=Rules.message_rule, priority=15, block=False)
 week_mapping = ('一', '二', '三', '四', '五', '六', '日')
@@ -35,6 +50,13 @@ async def watch_increase(event: GroupIncreaseNoticeEvent):
 
 @matcher.handle()
 async def watch_poke(event: PokeNotifyEvent, matcher: Matcher):
+    # ====================== 新增：冷却判断（核心防刷屏） ======================
+    global last_poke_time
+    current_time = event.time  # 获取当前戳一戳的时间戳
+    if current_time - last_poke_time < POKE_COOLDOWN:
+        cool_msg = random.choice(POKE_COOLDOWN_MSG)  # 随机选一句冷却回应
+        await matcher.finish(cool_msg, at_sender=True)
+    last_poke_time = current_time  
     if not event.is_tome():
         return None
     
