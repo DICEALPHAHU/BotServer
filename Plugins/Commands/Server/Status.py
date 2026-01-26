@@ -9,11 +9,10 @@
 个人捞B，懒得做其他端的适配了，代码和我有一个能跑就行了，搞那么复杂干啥。
 新增自动安装依赖：程序启动自动检测mcrcon，未安装则自动下载，纯傻瓜式操作。
 20260126 RCON改造+自动装依赖。
-个人习惯写注释，不然到时候修起来就是天书，自己fork的时候爱删不删，不过修不好与我没有关系。
+个人习惯保留注释，不然到时候修起来就是天书，自己fork的时候爱删不删，不过修不好与我没有关系。
 糊糊敬上。 
 """
 
-# 以下我重新整合了库文件，避免乱糟糟的
 from io import BytesIO
 from os.path import exists
 import sys
@@ -23,7 +22,6 @@ import re
 import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, Tuple
-
 
 # NoneBot相关核心导入
 from nonebot import on_command
@@ -41,42 +39,33 @@ from Scripts import Globals
 from Scripts.Managers import server_manager
 from Scripts.Utils import Rules, turn_message
 
-import mcrcon
-
 # ======================读取ServerConfig.json中的MC服务器RCON配置 ======================
 def get_mc_rcon_config() -> Dict[str, dict]:
-    """
-    替换原get_mc_log_config：读取BotServer/ServerConfig.json中的mc_server_rcon配置
-    返回：{服务器名: {host: 服务器IP, port: RCON端口, password: RCON密码, timeout: 超时秒数}}
-    配置路径不变：BotServer根目录（与原日志配置同文件）
-    """
     from pathlib import Path
-    # 修复原代码未定义config的bug：补全配置文件路径读取
     config_path = Path(__file__).resolve().parents[3] / "ServerConfig.json"
     try:
         if not config_path.exists():
-            logger.critical(f"ServerConfig.json不存在，路径：{config_path}")
+            logger.critical(f"Status.py：ServerConfig.json不存在，路径：{config_path}")
             return {}
         with open(config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
         mc_rcon = config.get("mc_server_rcon", {})
         if not isinstance(mc_rcon, dict):
-            logger.error(f"mc_server_rcon格式错误，必须是对象，当前：{type(mc_rcon)}")
+            logger.error(f"Status.py：mc_server_rcon格式错误，必须是对象，当前：{type(mc_rcon)}")
             return {}
         # 补全默认配置
         for srv_name, rcon_info in mc_rcon.items():
             rcon_info.setdefault("port", 25575)  # MC默认RCON端口
             rcon_info.setdefault("timeout", 5)   # 默认5秒超时
-        logger.success(f"成功读取MC RCON配置，共{len(mc_rcon)}台服务器：{list(mc_rcon.keys())}")
+        logger.success(f"Status.py：成功读取MC RCON配置，共{len(mc_rcon)}台服务器：{list(mc_rcon.keys())}")
         return mc_rcon
     except json.JSONDecodeError:
-        logger.critical(f"ServerConfig.json不是合法的JSON格式")
+        logger.critical(f"Status.py：ServerConfig.json不是合法的JSON格式")
         return {}
     except Exception as e:
-        logger.critical(f"读取ServerConfig.json失败：{str(e)}")
+        logger.critical(f"Status.py：读取ServerConfig.json失败：{str(e)}")
         return {}
 
-# 全局加载RCON配置（启动时加载一次），替换原MC_LOG_PATHS
 MC_RCON_CONFIG = get_mc_rcon_config()
 
 # ======================RCON执行tps/mspt并解析（仅适配Purpur） ======================
@@ -121,7 +110,8 @@ def parse_mspt_from_rcon(response: str) -> float:
     if mspt == 0.0:
         logger.warning(f"MSPT解析失败，过滤颜色符后内容：{clean_resp[:100]}...")
     return mspt
-    
+
+# 核心修改1：移除内部数据追加，仅返回TPS/MSPT，由主逻辑统一追加
 async def get_tps_mspt(server_name: str) -> Tuple[float, float]:
     """    
     保留原函数名/入参/返回值，内部完全替换为RCON逻辑
@@ -134,7 +124,6 @@ async def get_tps_mspt(server_name: str) -> Tuple[float, float]:
         return 0.0, 0.0
     rcon_info = MC_RCON_CONFIG[server_name]
     tps, mspt = 0.0, 0.0
-    
 
     def rcon_operation():
         """同步RCON操作，封装为函数供异步线程调用"""
@@ -163,29 +152,29 @@ async def get_tps_mspt(server_name: str) -> Tuple[float, float]:
         logger.warning(f"服务器[{server_name}]RCON操作超时（{timeout}秒），无法获取5秒TPS/MSPT")
     except Exception as e:
         logger.warning(f"服务器[{server_name}]获取5秒TPS/MSPT失败：{str(e)}")
-    # 获取当前真实时间（和CPU/RAM同时间戳，保证4项指标时间完全一致）
-    current_time = datetime.now().strftime("%H:%M:%S")
-    # 处理TPS历史 + 同步记录真实时间，超出长度同时截断
-    if server_name not in Globals.tps_occupation:
-        Globals.tps_occupation[server_name] = []
-        Globals.tps_time[server_name] = []
-    Globals.tps_occupation[server_name].append(tps)
-    Globals.tps_time[server_name].append(current_time)
-    if len(Globals.tps_occupation[server_name]) > Globals.MAX_HISTORY_LENGTH:
-        Globals.tps_occupation[server_name].pop(0)
-        Globals.tps_time[server_name].pop(0)
-
-    # 处理MSPT历史 + 同步记录真实时间，超出长度同时截断
-    if server_name not in Globals.mspt_occupation:
-        Globals.mspt_occupation[server_name] = []
-        Globals.mspt_time[server_name] = []
-    Globals.mspt_occupation[server_name].append(mspt)
-    Globals.mspt_time[server_name].append(current_time)
-    if len(Globals.mspt_occupation[server_name]) > Globals.MAX_HISTORY_LENGTH:
-        Globals.mspt_occupation[server_name].pop(0)
-        Globals.mspt_time[server_name].pop(0)
     return tps, mspt 
-        
+
+def init_and_append_history(server_name: str, data_dict: dict, time_dict: dict, value: float, max_len: int, current_time: str):
+    """
+    统一初始化全局字典+追加数据+截断超长数据
+    server_name: 服务器名
+    data_dict: 指标全局字典
+    time_dict: 时间全局字典
+    value: 要追加的指标值
+    max_len: 最大历史长度（Globals.MAX_HISTORY_LENGTH）
+    current_time: 统一的采集时间戳
+    """
+    if server_name not in data_dict:
+        data_dict[server_name] = []
+    if server_name not in time_dict:
+        time_dict[server_name] = []
+    data_dict[server_name].append(value)
+    time_dict[server_name].append(current_time)
+    # 截断超长数据（数据和时间同步截断，保证长度一致）
+    if len(data_dict[server_name]) > max_len:
+        data_dict[server_name].pop(0)
+        time_dict[server_name].pop(0)
+
 def choose_font():
     from matplotlib import rcParams  
     # 全局配置matplotlib，强制使用中文字体渲染，关闭负号乱码
@@ -207,13 +196,14 @@ def choose_font():
     logger.warning('未找到楷体和自定义字体，将使用系统备用中文字体绘制图表')
     return FontProperties(size=15)
 
-
 font = choose_font()
 matcher = on_command('server status', force_whitespace=True, block=True, priority=5, rule=Rules.command_rule)
 
-
 @matcher.handle()
 async def handle_group(event: MessageEvent, args: Message = CommandArg()):
+    current_time = datetime.now().strftime("%H:%M:%S")
+    max_len = Globals.MAX_HISTORY_LENGTH  # 统一最大长度，避免硬写
+
     if args := args.extract_plain_text().strip():
         flag, response = await get_status(args)
         if flag is False:
@@ -221,34 +211,13 @@ async def handle_group(event: MessageEvent, args: Message = CommandArg()):
         # 调用解析函数获取TPS/MSPT
         tps, mspt = await get_tps_mspt(flag)
         cpu, ram = response
-        # 获取当前真实采集时间（时:分:秒）
-        current_time = datetime.now().strftime("%H:%M:%S")
-        
-        # 追加CPU数据 + 同步记录真实时间
-        if flag not in Globals.cpu_occupation:
-            Globals.cpu_occupation[flag] = []
-            Globals.cpu_time[flag] = []
-        if flag not in Globals.cpu_time:  # 额外兜底判断，确保时间字典存在
-            Globals.cpu_time[flag] = []
-        Globals.cpu_occupation[flag].append(cpu)
-        Globals.cpu_time[flag].append(current_time)
-        # 超出最大长度，同时截断指标和时间
-        if len(Globals.cpu_occupation[flag]) > Globals.MAX_HISTORY_LENGTH:
-            Globals.cpu_occupation[flag].pop(0)
-            Globals.cpu_time[flag].pop(0)
-        
-        # 追加RAM数据 + 同步记录真实时间
-        if flag not in Globals.ram_occupation:
-            Globals.ram_occupation[flag] = []
-            Globals.ram_time[flag] = []
-        if flag not in Globals.ram_time:  
-            Globals.ram_time[flag] = []
-        Globals.ram_occupation[flag].append(ram)
-        Globals.ram_time[flag].append(current_time)
-        if len(Globals.ram_occupation[flag]) > Globals.MAX_HISTORY_LENGTH:
-            Globals.ram_occupation[flag].pop(0)
-            Globals.ram_time[flag].pop(0)
-            
+        server_name = flag
+
+        init_and_append_history(server_name, Globals.cpu_occupation, Globals.cpu_time, cpu, max_len, current_time)
+        init_and_append_history(server_name, Globals.ram_occupation, Globals.ram_time, ram, max_len, current_time)
+        init_and_append_history(server_name, Globals.tps_occupation, Globals.tps_time, tps, max_len, current_time)
+        init_and_append_history(server_name, Globals.mspt_occupation, Globals.mspt_time, mspt, max_len, current_time)
+
         message = turn_message(detailed_handler(flag, response, tps, mspt))
         await matcher.finish(message)
     
@@ -260,37 +229,15 @@ async def handle_group(event: MessageEvent, args: Message = CommandArg()):
     tps_mspt_data = {}
     for server_name in response.keys():
         tps_mspt_data[server_name] = await get_tps_mspt(server_name)
-        # 追加CPU/RAM到Global + 记录真实采集时间
         cpu, ram = response[server_name]
-        current_time = datetime.now().strftime("%H:%M:%S")
         
-        # 追加CPU + 同步时间
-        if server_name not in Globals.cpu_occupation:
-            Globals.cpu_occupation[server_name] = []
-            Globals.cpu_time[server_name] = []
-        if server_name not in Globals.cpu_time:  
-            Globals.cpu_time[server_name] = []
-        Globals.cpu_occupation[server_name].append(cpu)
-        Globals.cpu_time[server_name].append(current_time)
-        if len(Globals.cpu_occupation[server_name]) > Globals.MAX_HISTORY_LENGTH:
-            Globals.cpu_occupation[server_name].pop(0)
-            Globals.cpu_time[server_name].pop(0)
-
-        # 追加RAM + 同步时间
-        if server_name not in Globals.ram_occupation:
-            Globals.ram_occupation[server_name] = []
-            Globals.ram_time[server_name] = []
-        if server_name not in Globals.ram_time:  
-            Globals.ram_time[server_name] = []
-        Globals.ram_occupation[server_name].append(ram)
-        Globals.ram_time[server_name].append(current_time)
-        if len(Globals.ram_occupation[server_name]) > Globals.MAX_HISTORY_LENGTH:
-            Globals.ram_occupation[server_name].pop(0)
-            Globals.ram_time[server_name].pop(0)
+        init_and_append_history(server_name, Globals.cpu_occupation, Globals.cpu_time, cpu, max_len, current_time)
+        init_and_append_history(server_name, Globals.ram_occupation, Globals.ram_time, ram, max_len, current_time)
+        init_and_append_history(server_name, Globals.tps_occupation, Globals.tps_time, tps_mspt_data[server_name][0], max_len, current_time)
+        init_and_append_history(server_name, Globals.mspt_occupation, Globals.mspt_time, tps_mspt_data[server_name][1], max_len, current_time)
     
     message = turn_message(status_handler(response, tps_mspt_data))
     await matcher.finish(message)
-
 
 def status_handler(data: dict, tps_mspt_data: dict = None):
     yield '已连接的所有服务器信息：'
@@ -320,7 +267,6 @@ def status_handler(data: dict, tps_mspt_data: dict = None):
     else:  # 图表为None时，不发图片
         yield '\n暂无法绘制趋势图：历史查询次数不足2次，请多次执行【server status】后重试'
     return None
-
 
 def detailed_handler(name: str, data: list, tps: float, mspt: float):
     cpu, ram = data
@@ -459,7 +405,7 @@ def draw_chart(data: dict, tps_mspt_data: dict):
     # ------------------- 保存图片并释放资源-------------------
     buffer = BytesIO()
     fig.savefig(buffer, format='png', dpi=120, bbox_inches='tight')
-    plt.close(fig)  # 强制关闭画布，释放内存
+    plt.close(fig)  
     buffer.seek(0)
     return buffer  
 
@@ -482,17 +428,16 @@ def draw_history_chart(name: str):
         logger.warning(f"服务器[{name}]历史数据不足5条，无法绘制历史趋势图")
         return None
     
-    # 保证四个指标的历史长度一致（取最短长度，避免绘图报错）
+    # 保证四个指标的历史长度一致
     cpu, ram, tps, mspt = [
         lst[-min_data_len:] for lst in [cpu_list, ram_list, tps_list, mspt_list]
     ]
     x_axis = list(range(1, min_data_len + 1))  # X轴：监控次数（每执行1次server status记1次）
 
-    # 创建画布，设置大小
+    # 创建画布
     fig, ax1 = plt.subplots(figsize=(10, 6))
-    ax2 = ax1.twinx()  # 双Y轴：左=CPU/RAM(%)，右=TPS/MSPT(ms)
+    ax2 = ax1.twinx()  
 
-    # 定义样式：和批量查询折线图**完全一致**，视觉统一
     style_config = {
         "CPU(%)": {"color": "#e53e3e", "linestyle": "-", "marker": "o", "linewidth": 2, "markersize": 6},
         "RAM(%)": {"color": "#3182ce", "linestyle": "-", "marker": "s", "linewidth": 2, "markersize": 6},
