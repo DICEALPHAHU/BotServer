@@ -68,3 +68,4 @@ config.sync_color_message = config.sync_color_message.lower()
 config.command_enabled.append('about')
 if config.sync_all_qq_message and ('send' in config.command_enabled):
     config.command_enabled.remove('send')
+config.command_enabled.append('weather')  # 追加weather
