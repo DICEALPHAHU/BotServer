@@ -1,3 +1,37 @@
+import importlib
+import subprocess
+import sys
+
+def install_global_dependencies():
+    # 项目所有第三方依赖：key=导入模块名，value=pip安装包名
+    # 下面三个是必要的，不要删！！！
+    REQUIRED_DEPS = {
+        "mcrcon": "mcrcon",          # MC相关mcrcon依赖
+        "uapi": "uapi-sdk-python",   # uapis.cn天气SDK
+        "requests": "requests"       # 基础网络请求依赖
+    }
+    missing_deps = []
+    # 检测缺失依赖
+    for mod_name, pkg_name in REQUIRED_DEPS.items():
+        try:
+            importlib.import_module(mod_name)
+        except ImportError:
+            missing_deps.append(pkg_name)
+    # 安装缺失依赖
+    if missing_deps:
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", *missing_deps],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+        except:
+            print(f"❌ 依赖安装失败！请手动执行：pip3.12 install {' '.join(missing_deps)}")
+            sys.exit(1)
+
+# 启动时立即执行依赖安装
+install_global_dependencies()
+
 from atexit import register
 from pathlib import Path
 
