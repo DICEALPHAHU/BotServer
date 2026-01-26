@@ -41,37 +41,7 @@ from Scripts import Globals
 from Scripts.Managers import server_manager
 from Scripts.Utils import Rules, turn_message
 
-
-# ====================== 用的Rcon，我怕你没装给你上个检测 ======================
-def auto_install_deps():
-    """
-    自动检测并安装mcrcon依赖
-    未安装则通过pip自动下载，安装失败则打印错误并退出，保证程序正常运行
-    """
-    try:
-        # 先尝试导入mcrcon，检测是否已安装
-        import mcrcon
-        logger.info("检测到mcrcon依赖已安装，跳过自动安装")
-    except ImportError:
-        logger.warning("未检测到mcrcon依赖，开始自动安装...")
-        try:
-            # 使用当前Python环境的pip自动安装mcrcon
-            subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "mcrcon", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"],
-                stdout=subprocess.DEVNULL,  
-                stderr=subprocess.DEVNULL
-            )
-            # 安装后重新导入
-            import mcrcon
-            logger.success("mcrcon依赖自动安装成功！")
-        except subprocess.CalledProcessError:
-            logger.critical("mcrcon依赖自动安装失败！请手动执行 pip install mcrcon 后重启程序")
-            sys.exit(1)  
-        except Exception as e:
-            logger.critical(f"自动安装依赖时发生未知错误：{str(e)}，请手动安装mcrcon，用cmd敲：pip install mcrcon")
-            sys.exit(1)
-
-auto_install_deps()
+import mcrcon
 
 # ======================读取ServerConfig.json中的MC服务器RCON配置 ======================
 def get_mc_rcon_config() -> Dict[str, dict]:
