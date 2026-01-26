@@ -19,58 +19,6 @@ from Scripts.Managers import server_manager
 from Scripts.Utils import Rules, turn_message, get_permission, get_args
 
 import mcrcon
-# ====================== 完全复制status.py的自动安装依赖逻辑 ======================
-def auto_install_deps():
-    """
-    自动检测并安装mcrcon依赖（和status.py完全一致）
-    未安装则通过pip自动下载，安装失败则打印错误并退出
-    """
-    try:
-        import mcrcon
-        logger.info("Command.py：检测到mcrcon依赖已安装，跳过自动安装")
-    except ImportError:
-        logger.warning("Command.py：未检测到mcrcon依赖，开始自动安装...")
-        try:
-            subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "mcrcon", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            import mcrcon
-            logger.success("Command.py：mcrcon依赖自动安装成功！")
-        except subprocess.CalledProcessError:
-            logger.critical("Command.py：mcrcon依赖自动安装失败！请手动执行 pip install mcrcon 后重启程序")
-            sys.exit(1)
-        except Exception as e:
-            logger.critical(f"Command.py：自动安装依赖时发生未知错误：{str(e)}，请手动安装mcrcon")
-            sys.exit(1)
-
-auto_install_deps()
-
-def get_mc_rcon_config() -> Dict[str, dict]:
-    config_path = Path(__file__).resolve().parents[2] / "ServerConfig.json"
-    try:
-        if not config_path.exists():
-            logger.critical(f"Command.py：ServerConfig.json不存在，路径：{config_path}")
-            return {}
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-        mc_rcon = config.get("mc_server_rcon", {})
-        if not isinstance(mc_rcon, dict):
-            logger.error(f"Command.py：mc_server_rcon格式错误，当前：{type(mc_rcon)}")
-            return {}
-        # 补全默认配置
-        for srv_name, rcon_info in mc_rcon.items():
-            rcon_info.setdefault("port", 25575)  # MC默认RCON端口
-            rcon_info.setdefault("timeout", 5)   # 默认5秒超时
-        logger.success(f"Command.py：成功读取MC RCON配置，共{len(mc_rcon)}台服务器：{list(mc_rcon.keys())}")
-        return mc_rcon
-    except json.JSONDecodeError:
-        logger.critical(f"Command.py：ServerConfig.json不是合法的JSON格式")
-        return {}
-    except Exception as e:
-        logger.critical(f"Command.py：读取ServerConfig.json失败：{str(e)}")
-        return {}
 
 # 全局加载RCON配置
 MC_RCON_CONFIG = get_mc_rcon_config()
