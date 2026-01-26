@@ -1,5 +1,9 @@
 {
-  "mc_server_log_paths": {
-    "Server_name": "Server_Path"
+  "mc_server_rcon": {
+    "DefaultServer": {
+      "host": "127.0.0.1",        
+      "port": 25575,              
+      "password": ""
+    }
   }
 }
