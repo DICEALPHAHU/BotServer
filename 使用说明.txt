@@ -1,5 +1,8 @@
 ====================== MCQQBOT机器人傻瓜式获取服务器状态的教程 ======================
      还看不懂呢就应该想想自己有没有能力使用这个机器人了。
+如何开启这个机器人呢：
+将下方的ServerConfig.json与.env（我更推荐在网站上配置env）配置好后，用Python直接运行Bot.py
+
 ServerConfig.json:
      新人使用必读：
      1. 先开启MC服务器的RCON功能（修改server.properties，教程在下方）
@@ -23,8 +26,15 @@ ServerConfig.json:
      3. 公网服务器连不上：云服务器需在「安全组/防火墙」开放RCON端口（如25575），协议选TCP
      4. JSON解析报错：检查是否用了中文引号/逗号，层级是否正确，没有多余的逗号
      5. 能获取CPU/RAM但TPS/MSPT为0：RCON配置错误，查看Bot日志的具体报错信息
-mc_wiki_database:
+Config/mc_wiki_database:
+     适配戳一戳冷知识功能
      你要加新的东西的话，往下面加一行下面的就行了
      示例：
          {"title": "冷知识标题", "content": "内容", "category": "分类"},
+     最后一行记得把末尾的逗号去掉不然报错
+Config/meal_choose.json:
+     适配“早上/中午/晚上吃什么”功能
+     你要加新的东西的话，往下面加一行下面的就行了
+     示例：
+        "豆浆油条": "https://pic.nximg.cn/file/20220328/32896850_180051429105_2.jpg",
      最后一行记得把末尾的逗号去掉不然报错
