@@ -2,13 +2,16 @@
 吐槽：原作者，其实除了CPU和RAM，服务器应该还需要读取TPS和MSPT这个重要的数据。
 光看前两者占用是看不出毛病的说实话，毕竟直接能反应的就是TPS和MSPT，
 我才接触python一个月都不到，个人Python太垃圾不知道怎么搞，
-加TPS和MSPT的原理修改：原日志读取→改为RCON直连执行tps/mspt指令，实时返回结果，无日志覆盖问题，
+加TPS和MSPT的原理修改：原日志读取→改为RCON直连执行tps指令，实时返回结果，无日志覆盖问题，
 适配Purpur端，RCON方式无日志量限制，稳定性拉满，
-目前只适用于Purpur端（或许paper端也能用？），因为我在Purpur端试的，其他端的指令输出可能都不一样，后续做适配？
-原来是用的读日志的方法，不过局限性拉满，读不到数据就会出错（这个是当时在湖大幻境社开发群里就有人说了，所有我改了）。
+目前适配Purpur/Folia/Paper/Spigot端，原生格式精准解析，Spigot端无MSPT支持
+本人不做tabTps插件的适配，见谅（那个做适配，正则一大堆，我会死）。
+本人也不做Bukkit适配，都2026了还有人用这个端跑服务器，敬你是条汉子。
+原来是用的读日志的方法，不过局限性拉满，读不到数据就会出错（这个是当时在湖大幻境社开发群里就有人说了，所以我改了）。
 个人捞B，懒得做其他端的适配了，代码和我有一个能跑就行了，搞那么复杂干啥。
-新增自动安装依赖：程序启动自动检测mcrcon，未安装则自动下载，纯傻瓜式操作。
-20260126 RCON改造+自动装依赖。
+20260126 RCON改造+自动装依赖，
+20260128 补充多端原生格式适配。
+20260130 修复version指令读取过早问题，增加重试+结果校验机制
 个人习惯保留注释，不然到时候修起来就是天书，自己fork的时候爱删不删，不过修不好与我没有关系。
 糊糊敬上。 
 """
@@ -22,6 +25,7 @@ import re
 import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, Tuple
+import time  # 用于version指令重试间隔
 
 # NoneBot相关核心导入
 from nonebot import on_command
@@ -39,41 +43,165 @@ from Scripts import Globals
 from Scripts.Managers import server_manager
 from Scripts.Utils import Rules, turn_message
 
+SERVER_TYPE_NAME = {}
+MC_RCON_CONFIG = {}
+
 # ======================读取ServerConfig.json中的MC服务器RCON配置 ======================
-def get_mc_rcon_config() -> Dict[str, dict]:
-    from pathlib import Path
-    config_path = Path(__file__).resolve().parents[3] / "ServerConfig.json"
+def load_rcon_config():
+    global MC_RCON_CONFIG
     try:
+        from pathlib import Path
+        config_path = Path(__file__).resolve().parents[3] / "ServerConfig.json"
         if not config_path.exists():
-            logger.critical(f"Status.py：ServerConfig.json不存在，路径：{config_path}")
-            return {}
+            logger.critical(f"RCON配置加载失败：ServerConfig.json不存在，路径：{config_path}")
+            return False
         with open(config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
-        mc_rcon = config.get("mc_server_rcon", {})
-        if not isinstance(mc_rcon, dict):
-            logger.error(f"Status.py：mc_server_rcon格式错误，必须是对象，当前：{type(mc_rcon)}")
-            return {}
-        # 补全默认配置
-        for srv_name, rcon_info in mc_rcon.items():
-            rcon_info.setdefault("port", 25575)  # MC默认RCON端口
-            rcon_info.setdefault("timeout", 5)   # 默认5秒超时
-        logger.success(f"Status.py：成功读取MC RCON配置，共{len(mc_rcon)}台服务器：{list(mc_rcon.keys())}")
-        return mc_rcon
-    except json.JSONDecodeError:
-        logger.critical(f"Status.py：ServerConfig.json不是合法的JSON格式")
-        return {}
+        MC_RCON_CONFIG = config.get("mc_server_rcon", {})
+        if not MC_RCON_CONFIG:
+            logger.warning(f"RCON配置加载警告：mc_server_rcon节点为空，无可用服务器配置")
+            return False
+        logger.success(f"RCON配置加载成功，共配置{len(MC_RCON_CONFIG)}台服务器")
+        return True
     except Exception as e:
-        logger.critical(f"Status.py：读取ServerConfig.json失败：{str(e)}")
-        return {}
+        logger.critical(f"RCON配置加载异常：{str(e)}")
+        return False
 
-MC_RCON_CONFIG = get_mc_rcon_config()
 
-# ======================RCON执行tps/mspt并解析（仅适配Purpur） ======================
-def parse_tps_from_rcon(response: str) -> float:
+# ======================通过RCON执行version指令，判断端类型======================
+def get_mc_server_type(rcon: mcrcon.MCRcon, retry_times: int = 3, retry_interval: float = 1.0) -> str:
     """
-    替换原parse_tps_from_log：解析RCON执行tps指令的返回结果
-    适配格式（去掉该死的颜色通配符，Purpur搞什么颜色代码啊，真的是麻烦的死）：TPS from last 5s, 1m, 5m, 15m: 20.0, 20.0, 20.0, 20.0
-    返回：5秒内TPS值（第二个数值），失败返回0.0
+    传入已建立的RCON连接对象，执行version指令判断端类型
+    优先级：Purpur > Folia > Paper > Spigot
+    新增：重试机制+结果校验，解决服务器启动阶段返回checking version的问题
+    :param retry_times: 重试次数，默认3次
+    :param retry_interval: 每次重试间隔，单位秒，默认1秒
+    :return: 端类型字符串，失败返回unknown
+    """
+    INVALID_VERSION_KEYWORDS = ["checking version", "please wait", "loading version", "version check"]
+    for retry in range(retry_times):
+        try:
+            version_resp = rcon.command("version")
+            clean_resp = re.sub(r'§[0-9a-fA-FxX]|§l|§m|§n|§o|§r', '', version_resp).lower()
+            clean_resp = clean_resp.strip()
+            
+            if any(keyword in clean_resp for keyword in INVALID_VERSION_KEYWORDS):
+                logger.info(f"第{retry+1}次执行version指令，获取到临时提示：{clean_resp[:50]}...，即将重试")
+                if retry < retry_times - 1:  
+                    time.sleep(retry_interval)
+                continue
+            
+            if "purpur" in clean_resp:
+                return "purpur"
+            elif "folia" in clean_resp:
+                return "folia"
+            elif "paper" in clean_resp:
+                return "paper"
+            elif "spigot" in clean_resp:
+                return "spigot"
+            else:
+                logger.info(f"未知端类型，version指令过滤后内容：{clean_resp[:200]}...")
+                return "unknown"
+        except Exception as e:
+            logger.warning(f"第{retry+1}次执行version指令失败：{str(e)}")
+            if retry < retry_times - 1:
+                time.sleep(retry_interval)
+            continue
+
+    logger.error(f"执行version指令{retry_times}次均失败，无法判断端类型")
+    return "unknown"
+
+def preload_all_server_type():
+    global SERVER_TYPE_NAME
+    SERVER_TYPE_NAME.clear()
+    if not MC_RCON_CONFIG:
+        logger.warning("预加载端类型失败：RCON配置未初始化")
+        return
+    for server_name, rcon_info in MC_RCON_CONFIG.items():
+        try:
+            with mcrcon.MCRcon(
+                host=rcon_info.get("host", "127.0.0.1"),
+                password=rcon_info.get("password", ""),
+                port=rcon_info.get("port", 25575),
+                timeout=rcon_info.get("timeout", 10)
+            ) as rcon:
+                server_type = get_mc_server_type(rcon, retry_times=3, retry_interval=1.5)
+                SERVER_TYPE_NAME[server_name] = server_type
+                logger.info(f"服务器[{server_name}]端类型预加载成功：{server_type.capitalize()}")
+        except Exception as e:
+            SERVER_TYPE_NAME[server_name] = "unknown"
+            logger.error(f"服务器[{server_name}]端类型预加载失败：{str(e)}，标记为未知")
+    logger.success(f"所有服务器端类型预加载完成，共{len(SERVER_TYPE_NAME)}台 | 未知端类型：{list(SERVER_TYPE_NAME.values()).count('unknown')}台")
+
+if load_rcon_config():
+    preload_all_server_type()
+else:
+    logger.critical("核心初始化失败：RCON配置加载失败，无法预加载端类型，程序可能无法正常运行")
+
+# ===================核心逻辑：获取TPS/MSPT =================
+async def get_tps_mspt(server_name: str) -> Tuple[float, float]:
+    if server_name not in MC_RCON_CONFIG:
+        logger.warning(f"服务器[{server_name}]未配置RCON信息，无法获取TPS/MSPT")
+        return 0.0, 0.0
+    server_type = SERVER_TYPE_NAME.get(server_name, "unknown")
+    if server_type == "unknown":
+        logger.warning(f"服务器[{server_name}]端类型为未知，无法执行专属解析")
+        return 0.0, 0.0
+    
+    rcon_info = MC_RCON_CONFIG[server_name]
+    tps, mspt = 0.0, 0.0
+
+    def rcon_operation():
+        try:
+            with mcrcon.MCRcon(
+                host=rcon_info["host"],
+                password=rcon_info["password"],
+                port=rcon_info["port"],
+                timeout=rcon_info.get("timeout", 15)  # 修复：把()改成get()，字典不能直接调用
+            ) as rcon:
+                logger.info(f"服务器[{server_name}]（{server_type.capitalize()}端）开始执行TPS/MSPT解析")
+                tps_resp = rcon.command("tps")
+                mspt_resp = rcon.command("mspt")
+                if server_type == "purpur":
+                    t = parse_tps_from_rcon_purpur(tps_resp)
+                    m = parse_mspt_from_rcon_purpur(mspt_resp)
+                elif server_type == "folia":
+                    t = parse_tps_from_rcon_folia(tps_resp)
+                    m = parse_mspt_from_rcon_folia(mspt_resp)
+                elif server_type == "paper":
+                    t = parse_tps_from_rcon_paper(tps_resp)
+                    m = parse_mspt_from_rcon_paper(mspt_resp)
+                elif server_type == "spigot":
+                    t = parse_tps_from_rcon_spigot(tps_resp)
+                    m = parse_mspt_from_rcon_spigot(mspt_resp)
+                else:
+                    t, m = 0.0, 0.0
+                return t, m
+        except Exception as e:
+            logger.warning(f"服务器[{server_name}]RCON执行tps/mspt失败：{str(e)}")
+            return 0.0, 0.0
+
+    try:
+        timeout = rcon_info.get("timeout", 15)
+        tps, mspt = await asyncio.wait_for(
+            asyncio.to_thread(rcon_operation),  
+            timeout=timeout
+        )
+        logger.info(f"服务器[{server_name}]TPS/MSPT获取成功：TPS={tps} | MSPT={mspt}ms")
+    except asyncio.TimeoutError:
+        logger.warning(f"服务器[{server_name}]RCON操作超时（{timeout}秒），无法获取TPS/MSPT")
+    except Exception as e:
+        logger.warning(f"服务器[{server_name}]获取TPS/MSPT失败：{str(e)}")
+    return tps, mspt 
+
+
+# ======================RCON执行tps/mspt并解析 ======================
+# --- Purpur端专属解析---
+def parse_tps_from_rcon_purpur(response: str) -> float:
+    """
+    Purpur端专属：解析RCON执行tps指令的返回结果
+    适配格式：TPS from last 5s, 1m, 5m, 15m: 20.0, 20.0, 20.0, 20.0
+    返回：5秒内TPS值，失败返回0.0
     """
     tps = 0.0
     clean_resp = re.sub(r'§[0-9a-fA-Za-z]', '', response)
@@ -87,18 +215,17 @@ def parse_tps_from_rcon(response: str) -> float:
             except ValueError:
                 pass
     if tps == 0.0:
-        logger.warning(f"TPS解析失败，过滤颜色符后内容：{clean_resp[:100]}...")
+        logger.warning(f"Purpur端TPS解析失败，过滤颜色符后内容：{clean_resp[:100]}...")
     return tps
 
-def parse_mspt_from_rcon(response: str) -> float:
+def parse_mspt_from_rcon_purpur(response: str) -> float:
     """
-    替换原parse_mspt_from_log：解析RCON执行mspt指令的返回结果
+    Purpur端专属：解析RCON执行mspt指令的返回结果
     适配格式：9.0/7.0/10.9, 9.1/7.0/15.9, 8.6/6.4/20.3
-    返回：5秒内MSPT值（第三个段第一个数值），失败返回0.0
+    返回：5秒内MSPT值，失败返回0.0
     """
     mspt = 0.0
     clean_resp = re.sub(r'§[0-9a-fA-Za-z]|◴', '', response)
-    # 正则匹配3个MSPT段，分别对应5s/10s/1m
     mspt_pattern = re.compile(r"(\d+\.\d+/\d+\.\d+/\d+\.\d+),\s*(\d+\.\d+/\d+\.\d+/\d+\.\d+),\s*(\d+\.\d+/\d+\.\d+/\d+\.\d+)")
     mspt_match = mspt_pattern.search(clean_resp)  
     if mspt_match:  
@@ -108,79 +235,154 @@ def parse_mspt_from_rcon(response: str) -> float:
         except (IndexError, ValueError):
             pass
     if mspt == 0.0:
-        logger.warning(f"MSPT解析失败，过滤颜色符后内容：{clean_resp[:100]}...")
+        logger.warning(f"Purpur端MSPT解析失败，过滤颜色符后内容：{clean_resp[:100]}...")
     return mspt
 
-# 核心修改1：移除内部数据追加，仅返回TPS/MSPT，由主逻辑统一追加
-async def get_tps_mspt(server_name: str) -> Tuple[float, float]:
-    """    
-    保留原函数名/入参/返回值，内部完全替换为RCON逻辑
-    适配Purpur：RCON串行执行tps/mspt指令，实时获取结果，无日志写入延迟
-    返回：解析后的(TPS, MSPT)，失败均返回0.0
+# --- Folia端专属解析---
+def parse_tps_from_rcon_folia(response: str) -> float:
     """
-    # 校验服务器是否配置RCON，肯定有腐竹会写错东西，兜底
-    if server_name not in MC_RCON_CONFIG:
-        logger.warning(f"服务器[{server_name}]未配置RCON信息，无法获取TPS/MSPT")
-        return 0.0, 0.0
-    rcon_info = MC_RCON_CONFIG[server_name]
-    tps, mspt = 0.0, 0.0
-
-    def rcon_operation():
-        """同步RCON操作，封装为函数供异步线程调用"""
+    Folia端专属：解析RCON执行tps指令的原生格式
+    适配原生格式：§x§4§f§a§4§f§0§lServer Health Report...Lowest/Median/Highest Region TPS: §x§1§e§c§c§5§820.00
+    返回：Median Region TPS，失败返回0.0
+    吐槽：你麻痹的Folia，一个tps搞得花里胡哨的。
+    """
+    tps = 0.0
+    clean_resp = re.sub(r'§[0-9a-fA-Za-xX]', '', response).replace("  ", " ").strip()
+    # Median Region TPS
+    tps_pattern = re.compile(r'Median Region TPS:\s*(\d+(\.\d+)?)', re.IGNORECASE)
+    tps_match = tps_pattern.search(clean_resp)
+    if tps_match:
         try:
-            with mcrcon.MCRcon(
-                host=rcon_info["host"],
-                password=rcon_info["password"],
-                port=rcon_info["port"],
-                timeout=rcon_info["timeout"]
-            ) as rcon:
-                tps_resp = rcon.command("tps")   
-                mspt_resp = rcon.command("mspt") 
-                return parse_tps_from_rcon(tps_resp), parse_mspt_from_rcon(mspt_resp)
-        except Exception as e:
-            logger.warning(f"服务器[{server_name}]RCON操作失败：{str(e)}")
-            return 0.0, 0.0
+            tps = round(float(tps_match.group(1)), 1)
+        except ValueError:
+            pass
+    # 兜底：若中位数匹配失败，尝试匹配最低/最高TPS
+    if tps == 0.0:
+        fallback_pattern = re.compile(r'(Lowest|Highest) Region TPS:\s*(\d+(\.\d+)?)', re.IGNORECASE)
+        fallback_match = fallback_pattern.search(clean_resp)
+        if fallback_match:
+            try:
+                tps = round(float(fallback_match.group(2)), 1)
+                logger.info(f"Folia端中位数TPS匹配失败，使用{fallback_match.group(1)} Region TPS替代：{tps}")
+            except ValueError:
+                pass
+    if tps == 0.0:
+        logger.warning(f"Folia端TPS解析失败，过滤颜色符后核心内容：{clean_resp[:200]}...")
+    return tps
 
-    try:
-        timeout = rcon_info["timeout"] + 1
-        tps, mspt = await asyncio.wait_for(
-            asyncio.to_thread(rcon_operation),  
-            timeout=timeout
-        )
-        logger.info(f"服务器[{server_name}]RCON获取5秒指标：TPS={tps} | MSPT={mspt}ms")
-    except asyncio.TimeoutError:
-        logger.warning(f"服务器[{server_name}]RCON操作超时（{timeout}秒），无法获取5秒TPS/MSPT")
-    except Exception as e:
-        logger.warning(f"服务器[{server_name}]获取5秒TPS/MSPT失败：{str(e)}")
-    return tps, mspt 
+def parse_mspt_from_rcon_folia(response: str) -> float:
+    """
+    Folia端专属：解析RCON执行mspt指令的原生返回结果
+    适配原生格式：§6Server tick times §e(§7avg§e/§7min§e/§7max§e)§6 from last 5s§7,...§6◴ §a0.0§7/§a0.0§7/§a0.0...
+    与Paper端MSPT格式完全一致，直接复用Paper端解析逻辑
+    返回：5秒内平均MSPT值，失败返回0.0
+    """
+    return parse_mspt_from_rcon_paper(response)
 
+# --- Paper端专属解析---
+def parse_tps_from_rcon_paper(response: str) -> float:
+    """
+    Paper端专属：解析RCON执行tps指令的原生返回结果
+    适配原生格式：§6TPS from last 1m, 5m, 15m: §a20.0, §a*20.0, §a*20.0
+    返回：1分钟平均TPS值，失败返回0.0
+    """
+    tps = 0.0
+    clean_resp = re.sub(r'§[0-9a-fA-Za-z]', '', response)
+    tps_pattern = re.compile(r"TPS from last 1m, 5m, 15m:\s*(.+?)$")
+    tps_match = tps_pattern.search(clean_resp)
+    if tps_match:
+        num_str_list = [s.strip().replace("*", "") for s in tps_match.group(1).split(',') if s.strip()]
+        if num_str_list:
+            try:
+                tps = round(float(num_str_list[0]), 1)
+            except ValueError:
+                pass
+    if tps == 0.0:
+        logger.warning(f"Paper端TPS解析失败，过滤颜色符后内容：{clean_resp[:100]}...")
+    return tps
+
+def parse_mspt_from_rcon_paper(response: str) -> float:
+    """
+    Paper端专属：解析RCON执行mspt指令的原生返回结果
+    适配原生格式：§6Server tick times §e(§7avg§e/§7min§e/§7max§e)§6 from last 5s§7,...§6◴ §a0.2§7/§a0.1§7/§a0.3...
+    返回：5秒内平均MSPT值，失败返回0.0
+    """
+    mspt = 0.0
+    clean_resp = re.sub(r'§[0-9a-fA-Za-z]|◴', '', response).replace("  ", " ").strip()
+    mspt_pattern = re.compile(r'\(avg/min/max\).*from last 5s, 10s, 1m:\s*(.+?)$', re.DOTALL)
+    mspt_match = mspt_pattern.search(clean_resp)
+    if mspt_match:
+        group_str = mspt_match.group(1).strip()
+        mspt_groups = [g.strip() for g in group_str.split(',') if g.strip()]
+        if mspt_groups:
+            five_sec_data = mspt_groups[0].split('/')
+            if len(five_sec_data) >= 1:
+                try:
+                    mspt = round(float(five_sec_data[0].strip()), 1)
+                except ValueError:
+                    pass
+    if mspt == 0.0:
+        logger.warning(f"Paper端MSPT解析失败，过滤颜色符后内容：{clean_resp[:200]}...")
+    return mspt
+
+# --- Spigot端专属解析---
+def parse_tps_from_rcon_spigot(response: str) -> float:
+    """
+    Spigot端专属：解析RCON执行tps指令的原生返回结果
+    适配原生格式：§6TPS from last 1m, 5m, 15m: §a20.0, §a*20.0, §a*20.0
+    返回：1分钟平均TPS值，失败返回0.0
+    """
+    tps = 0.0
+    clean_resp = re.sub(r'§[0-9a-fA-Za-z]', '', response)
+    tps_pattern = re.compile(r"TPS from last 1m, 5m, 15m:\s*(.+?)$")
+    tps_match = tps_pattern.search(clean_resp)
+    if tps_match:
+        num_str_list = [s.strip().replace("*", "") for s in tps_match.group(1).split(',') if s.strip()]
+        if num_str_list:
+            try:
+                tps = round(float(num_str_list[0]), 1)
+            except ValueError:
+                pass
+    if tps == 0.0:
+        logger.warning(f"Spigot端TPS解析失败，过滤颜色符后内容：{clean_resp[:100]}...")
+    return tps
+
+def parse_mspt_from_rcon_spigot(response: str) -> float:
+    """
+    Spigot端专属：解析RCON执行mspt指令的返回结果（兼容ESS插件，实际无MSPT支持）
+    适配ESS插件MSPT格式：Average MSPT: 8.5ms
+    返回：MSPT值，失败返回0.0并提示
+    """
+    mspt = 0.0
+    clean_resp = re.sub(r'§[0-9a-fA-Za-z]', '', response)
+    mspt_pattern = re.compile(r"Average MSPT:\s*(\d+\.\d+)")
+    mspt_match = mspt_pattern.search(clean_resp)
+    if mspt_match:
+        try:
+            mspt = round(float(mspt_match.group(1)), 1)
+        except ValueError:
+            pass
+    if mspt == 0.0:
+        logger.warning(f"Spigot端MSPT解析失败（tabTps插件未适配），过滤颜色符后内容：{clean_resp[:100]}...")
+    return mspt
+# ==============================TPS/MSPT适配结束 ===============================
+
+# ======================绘图区======================
 def init_and_append_history(server_name: str, data_dict: dict, time_dict: dict, value: float, max_len: int, current_time: str):
-    """
-    统一初始化全局字典+追加数据+截断超长数据
-    server_name: 服务器名
-    data_dict: 指标全局字典
-    time_dict: 时间全局字典
-    value: 要追加的指标值
-    max_len: 最大历史长度（Globals.MAX_HISTORY_LENGTH）
-    current_time: 统一的采集时间戳
-    """
     if server_name not in data_dict:
         data_dict[server_name] = []
     if server_name not in time_dict:
         time_dict[server_name] = []
     data_dict[server_name].append(value)
     time_dict[server_name].append(current_time)
-    # 截断超长数据（数据和时间同步截断，保证长度一致）
     if len(data_dict[server_name]) > max_len:
         data_dict[server_name].pop(0)
         time_dict[server_name].pop(0)
 
 def choose_font():
     from matplotlib import rcParams  
-    # 全局配置matplotlib，强制使用中文字体渲染，关闭负号乱码
     rcParams['font.sans-serif'] = ['SimHei', 'KaiTi', 'Microsoft YaHei', 'DejaVu Sans']
-    rcParams['axes.unicode_minus'] = False  # 解决负号显示为方块的问题
-    # 关闭字体相关的警告
+    rcParams['axes.unicode_minus'] = False  
     rcParams['font.family'] = 'sans-serif'
     import warnings
     warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
@@ -202,56 +404,60 @@ matcher = on_command('server status', force_whitespace=True, block=True, priorit
 @matcher.handle()
 async def handle_group(event: MessageEvent, args: Message = CommandArg()):
     current_time = datetime.now().strftime("%H:%M:%S")
-    max_len = Globals.MAX_HISTORY_LENGTH  # 统一最大长度，避免硬写
+    max_len = Globals.MAX_HISTORY_LENGTH  
 
     if args := args.extract_plain_text().strip():
         flag, response = await get_status(args)
         if flag is False:
             await matcher.finish(response)
-        # 调用解析函数获取TPS/MSPT
-        tps, mspt = await get_tps_mspt(flag)
+        # 修复1：传args（配置标识）给get_tps_mspt，而非flag（服务器对象/名称）
+        tps, mspt = await get_tps_mspt(args)
         cpu, ram = response
-        server_name = flag
+        server_name = args
 
         init_and_append_history(server_name, Globals.cpu_occupation, Globals.cpu_time, cpu, max_len, current_time)
         init_and_append_history(server_name, Globals.ram_occupation, Globals.ram_time, ram, max_len, current_time)
         init_and_append_history(server_name, Globals.tps_occupation, Globals.tps_time, tps, max_len, current_time)
         init_and_append_history(server_name, Globals.mspt_occupation, Globals.mspt_time, mspt, max_len, current_time)
 
-        message = turn_message(detailed_handler(flag, response, tps, mspt))
+        # 修复2：传args给detailed_handler，匹配字符串参数要求，解决dict not callable
+        message = turn_message(detailed_handler(args, response, tps, mspt))
         await matcher.finish(message)
     
-    # 批量查询所有服务器
     flag, response = await get_status()
     if flag is False:
         await matcher.finish(response)
-    # 批量解析所有服务器TPS/MSPT
     tps_mspt_data = {}
     for server_name in response.keys():
-        tps_mspt_data[server_name] = await get_tps_mspt(server_name)
-        cpu, ram = response[server_name]
-        
-        init_and_append_history(server_name, Globals.cpu_occupation, Globals.cpu_time, cpu, max_len, current_time)
-        init_and_append_history(server_name, Globals.ram_occupation, Globals.ram_time, ram, max_len, current_time)
-        init_and_append_history(server_name, Globals.tps_occupation, Globals.tps_time, tps_mspt_data[server_name][0], max_len, current_time)
-        init_and_append_history(server_name, Globals.mspt_occupation, Globals.mspt_time, tps_mspt_data[server_name][1], max_len, current_time)
+        # 修复3：显式解构元组，避免后续取值报错
+        tps, mspt = await get_tps_mspt(server_name)
+        tps_mspt_data[server_name] = (tps, mspt)
+        # 修复4：判断服务器是否在线，避免解构None报错
+        if occupation := response[server_name]:
+            cpu, ram = occupation
+            init_and_append_history(server_name, Globals.cpu_occupation, Globals.cpu_time, cpu, max_len, current_time)
+            init_and_append_history(server_name, Globals.ram_occupation, Globals.ram_time, ram, max_len, current_time)
+            init_and_append_history(server_name, Globals.tps_occupation, Globals.tps_time, tps, max_len, current_time)
+            init_and_append_history(server_name, Globals.mspt_occupation, Globals.mspt_time, mspt, max_len, current_time)
     
     message = turn_message(status_handler(response, tps_mspt_data))
     await matcher.finish(message)
 
+# =========================整合，机器人消息发送区 ====================
 def status_handler(data: dict, tps_mspt_data: dict = None):
     yield '已连接的所有服务器信息：'
     for name, occupation in data.items():
         yield F'————— {name} —————'
         if occupation:
             cpu, ram = occupation
+            server_type = SERVER_TYPE_NAME.get(name, "未知").capitalize()
+            yield F'  端类型：{server_type}'
             yield F'  内存使用率：{ram:.1f}%'
             yield F'  CPU 使用率：{cpu:.1f}%'
-            # 展示TPS/MSPT
             if tps_mspt_data and name in tps_mspt_data:
                 tps, mspt = tps_mspt_data[name]
-                yield F'  TPS（5秒内平均）：{tps:.1f}'
-                yield F'  MSPT（5秒内平均）：{mspt:.1f}ms'
+                yield F'  TPS：{tps:.1f}'
+                yield F'  MSPT（5秒平均）：{mspt:.1f}ms'
             continue
         yield F'  此服务器未处于监视状态！'
     if font is None:
@@ -262,44 +468,36 @@ def status_handler(data: dict, tps_mspt_data: dict = None):
         return None
     chart = draw_chart(data, tps_mspt_data)
     if chart:  
-        yield '\n服务器多次查询趋势折线图：'
+        yield '\n服务器趋势折线图：'
         yield str(MessageSegment.image(chart))
-    else:  # 图表为None时，不发图片
-        yield '\n暂无法绘制趋势图：历史查询次数不足2次，请多次执行【server status】后重试'
+    else:
+        yield '\n无法绘制趋势图：历史监控数据不足2次，请多次执行指令后重试'
     return None
 
 def detailed_handler(name: str, data: list, tps: float, mspt: float):
     cpu, ram = data
-    yield F'服务器 [{name}] 的详细信息：'
+    server_type = SERVER_TYPE_NAME.get(name, "未知").capitalize()
+    yield F'服务器 [{name}] 的详细监控信息：'
+    yield F'  端类型：{server_type}'
     yield F'  内存使用率：{ram:.1f}%'
     yield F'  CPU 使用率：{cpu:.1f}%'
-    yield F'  TPS（5秒内平均）：{tps:.1f}'
-    yield F'  MSPT（5秒内平均）：{mspt:.1f}ms'
+    yield F'  TPS：{tps:.1f}'
+    yield F'  MSPT（5秒平均）：{mspt:.1f}ms'
     if image := draw_history_chart(name):
-        yield '\n服务器的占用历史记录：'
+        yield '\n服务器历史监控趋势图：'
         yield str(MessageSegment.image(image))
         return None
-    yield '\n暂无法绘制历史趋势图：后台监控数据不足5次，请稍等片刻重试！'
+    yield '\n无法绘制历史趋势图：监控数据不足5次，请稍等片刻重试！'
     return None
 
-# -------------------------绘图区---------------------------------
-# 以下是适配TPS与MSPT的图像，从之前的柱状改折线了
 def draw_chart(data: dict, tps_mspt_data: dict):
-    """
-    - 单服务器：同色（蓝色）+ 不同标记区分CPU/RAM/TPS/MSPT
-    - 多服务器：每台专属颜色 + 统一标记规则，支持多机对比
-    - X轴：采集时间（时:分:秒）
-    - Y轴：CPU/RAM 0-100%，TPS/MSPT 0-70
-    """
-    logger.debug('绘制服务器趋势图：单服同色不同标记+多服专属颜色+时间轴')
-    # 过滤有监视数据的服务器
+    logger.debug('绘制多服务器趋势图：CPU/RAM/TPS/MSPT')
     valid_servers = {name: occ for name, occ in data.items() if occ}
     if not valid_servers:
         return None
     server_names = list(valid_servers.keys())
     server_count = len(valid_servers)
 
-    # 读取各服务器的历史监控数据
     all_history = {}
     for name in server_names:
         cpu_list = Globals.cpu_occupation.get(name, [])
@@ -308,28 +506,24 @@ def draw_chart(data: dict, tps_mspt_data: dict):
         mspt_list = Globals.mspt_occupation.get(name, [])
         real_time_list = Globals.cpu_time.get(name, [])
 
-        # 统一所有指标和时间的长度
         min_data_len = min(len(cpu_list), len(ram_list), len(tps_list), len(mspt_list), len(real_time_list))
         all_history[name] = {
             "cpu": cpu_list[-min_data_len:] if min_data_len > 0 else [],
             "ram": ram_list[-min_data_len:] if min_data_len > 0 else [],
             "tps": tps_list[-min_data_len:] if min_data_len > 0 else [],
             "mspt": mspt_list[-min_data_len:] if min_data_len > 0 else [],
-            "times": real_time_list[-min_data_len:] if min_data_len > 0 else []  # 真实采集时间
+            "times": real_time_list[-min_data_len:] if min_data_len > 0 else []
         }
 
-    # 过滤没法画点的服务器（2个点才绘制）
     valid_history = {k: v for k, v in all_history.items() if len(v["times"]) >= 2}
     if not valid_history:
-        logger.warning(f"监控数据不足2个点，无法绘制折线图")
+        logger.warning(f"绘制趋势图失败：所有服务器监控数据均不足2次")
         return None
     server_names = list(valid_history.keys())
-    server_count = len(valid_history)
-    # 统一X轴时间（所有服务器取第一台的时间轴，保证对齐）
     base_times = valid_history[server_names[0]]["times"]
 
     fig, ax1 = plt.subplots(figsize=(12, 6), dpi=120)
-    ax2 = ax1.twinx()  # 双Y轴：左轴CPU/RAM，右轴TPS/MSPT
+    ax2 = ax1.twinx()  
 
     index_markers = {"CPU": "o", "RAM": "s", "TPS": "^", "MSPT": "p"}  
     single_server_color = "#3182ce"  
@@ -337,11 +531,9 @@ def draw_chart(data: dict, tps_mspt_data: dict):
     line_width = 2.5  
     marker_size = 8   
 
-    # ------------------- 单服务器逻辑-------------------
-    if server_count == 1:
+    if len(valid_history) == 1:
         server_name = server_names[0]
         s_data = valid_history[server_name]
-        # 左Y轴：CPU/RAM（0-100%）
         ax1.plot(base_times, s_data["cpu"], label=f"{server_name}-CPU(%)",
                  color=single_server_color, marker=index_markers["CPU"],
                  linewidth=line_width, markersize=marker_size)
@@ -349,46 +541,37 @@ def draw_chart(data: dict, tps_mspt_data: dict):
                  color=single_server_color, marker=index_markers["RAM"],
                  linewidth=line_width, markersize=marker_size)
         ax1.set_ylim(0, 100)  
-        # 右Y轴：TPS/MSPT
-        ax2.plot(base_times, s_data["tps"], label=f"{server_name}-TPS(5s)",
+        ax2.plot(base_times, s_data["tps"], label=f"{server_name}-TPS",
                  color=single_server_color, marker=index_markers["TPS"],
                  linewidth=line_width, markersize=marker_size)
-        ax2.plot(base_times, s_data["mspt"], label=f"{server_name}-MSPT(5s)",
+        ax2.plot(base_times, s_data["mspt"], label=f"{server_name}-MSPT(ms)",
                  color=single_server_color, marker=index_markers["MSPT"],
                  linewidth=line_width, markersize=marker_size)
         ax2.set_ylim(0, 70)
-        # 图表标题
-        chart_title = f"{server_name} - 趋势监控（{len(base_times)}次采集）"
-
-    # ------------------- 多服务器逻辑-------------------
+        chart_title = f"{server_name} - 监控趋势（{len(base_times)}次采集）"
     else:
         for idx, server_name in enumerate(server_names):
             s_data = valid_history[server_name]
-            # 为每台服务器分配专属颜色
             curr_color = multi_server_colors[idx % len(multi_server_colors)]
-            # 左Y轴：CPU/RAM（0-100%）
             ax1.plot(base_times, s_data["cpu"], label=f"{server_name}-CPU(%)",
                      color=curr_color, marker=index_markers["CPU"],
                      linewidth=line_width, markersize=marker_size)
             ax1.plot(base_times, s_data["ram"], label=f"{server_name}-RAM(%)",
                      color=curr_color, marker=index_markers["RAM"],
                      linewidth=line_width, markersize=marker_size)
-            # 右Y轴：TPS/MSPT
-            ax2.plot(base_times, s_data["tps"], label=f"{server_name}-TPS(5s)",
+            ax2.plot(base_times, s_data["tps"], label=f"{server_name}-TPS",
                      color=curr_color, marker=index_markers["TPS"],
                      linewidth=line_width, markersize=marker_size)
-            ax2.plot(base_times, s_data["mspt"], label=f"{server_name}-MSPT(5s)",
+            ax2.plot(base_times, s_data["mspt"], label=f"{server_name}-MSPT(ms)",
                      color=curr_color, marker=index_markers["MSPT"],
                      linewidth=line_width, markersize=marker_size)
         ax1.set_ylim(0, 100)
         ax2.set_ylim(0, 70)
-        chart_title = f"多服务器5秒级趋势监控（{server_count}台 · {len(base_times)}次采集）"
+        chart_title = f"多服务器监控趋势（{len(valid_history)}台 · {len(base_times)}次采集）"
 
-    # ------------------- 统一坐标轴/图例配置-------------------
     ax1.set_xlabel('采集时间（时:分:秒）', fontproperties=font, fontsize=12, labelpad=8)
     ax1.set_ylabel('CPU / RAM 使用率 (%)', fontproperties=font, fontsize=12, labelpad=8)
     ax2.set_ylabel('TPS / MSPT (ms)', fontproperties=font, fontsize=12, labelpad=8)
-    # X轴时间旋转45度，避免文字重叠
     ax1.tick_params(axis="x", rotation=45, labelsize=10)
     ax1.tick_params(axis="y", labelsize=10)
     ax2.tick_params(axis="y", labelsize=10)
@@ -397,12 +580,9 @@ def draw_chart(data: dict, tps_mspt_data: dict):
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right",
                prop=font, framealpha=0.8, ncol=2, fontsize=9)
-    # 图表标题
     ax1.set_title(chart_title, fontproperties=font, fontsize=14, pad=15, fontweight="bold")
-    # 自动适配布局
     fig.tight_layout()
 
-    # ------------------- 保存图片并释放资源-------------------
     buffer = BytesIO()
     fig.savefig(buffer, format='png', dpi=120, bbox_inches='tight')
     plt.close(fig)  
@@ -410,68 +590,52 @@ def draw_chart(data: dict, tps_mspt_data: dict):
     return buffer  
 
 def draw_history_chart(name: str):
-    """
-    单服务器历史趋势图：双Y轴折线图（与批量查询样式统一）
-    左Y轴：CPU/RAM使用率(%)  右Y轴：5秒TPS/MSPT(ms)
-    仅当4项指标历史数据均大于等于5条时绘制，自动对齐数据长度
-    """
-    logger.debug(f'绘制服务器 [{name}] 5秒级历史状态折线图……')
-    # 从全局读取4项指标历史数据
+    logger.debug(f'绘制服务器 [{name}] 历史趋势图')
     cpu_list = Globals.cpu_occupation.get(name, [])
     ram_list = Globals.ram_occupation.get(name, [])
     tps_list = Globals.tps_occupation.get(name, [])
     mspt_list = Globals.mspt_occupation.get(name, [])
     
-    # 过滤历史数据不足的情况（至少5条才绘制，避免图表无意义）
     min_data_len = min(len(cpu_list), len(ram_list), len(tps_list), len(mspt_list))
     if min_data_len < 5:
-        logger.warning(f"服务器[{name}]历史数据不足5条，无法绘制历史趋势图")
+        logger.warning(f"绘制历史趋势图失败：服务器[{name}]监控数据仅{min_data_len}次，不足5次")
         return None
     
-    # 保证四个指标的历史长度一致
     cpu, ram, tps, mspt = [
         lst[-min_data_len:] for lst in [cpu_list, ram_list, tps_list, mspt_list]
     ]
-    x_axis = list(range(1, min_data_len + 1))  # X轴：监控次数（每执行1次server status记1次）
+    x_axis = list(range(1, min_data_len + 1))
 
-    # 创建画布
     fig, ax1 = plt.subplots(figsize=(10, 6))
     ax2 = ax1.twinx()  
 
     style_config = {
         "CPU(%)": {"color": "#e53e3e", "linestyle": "-", "marker": "o", "linewidth": 2, "markersize": 6},
         "RAM(%)": {"color": "#3182ce", "linestyle": "-", "marker": "s", "linewidth": 2, "markersize": 6},
-        "TPS(5s)": {"color": "#38a169", "linestyle": "--", "marker": "^", "linewidth": 2, "markersize": 6},
+        "TPS": {"color": "#38a169", "linestyle": "--", "marker": "^", "linewidth": 2, "markersize": 6},
         "MSPT(ms)": {"color": "#d69e2e", "linestyle": ":", "marker": "p", "linewidth": 2, "markersize": 6}
     }
 
-    # 左Y轴：CPU/RAM使用率（0-105%）
     ax1.plot(x_axis, cpu, label="CPU(%)", **style_config["CPU(%)"])
     ax1.plot(x_axis, ram, label="RAM(%)", **style_config["RAM(%)"])
     ax1.set_ylim(0, 105)
-    ax1.set_xlabel('监控次数（每执行1次server status记1次）', loc="right", fontproperties=font, fontsize=12)
+    ax1.set_xlabel('监控次数', loc="right", fontproperties=font, fontsize=12)
     ax1.set_ylabel('CPU/RAM 使用率 (%)', fontproperties=font, fontsize=12, color="#2d3748")
     ax1.tick_params(axis="y", labelcolor="#2d3748")
-    ax1.grid(True, alpha=0.3, axis="y")  # 仅Y轴网格，更清晰
+    ax1.grid(True, alpha=0.3, axis="y")
 
-    # 右Y轴：TPS/MSPT性能指标（0-70）
-    ax2.plot(x_axis, tps, label="TPS(5s)", **style_config["TPS(5s)"])
+    ax2.plot(x_axis, tps, label="TPS", **style_config["TPS"])
     ax2.plot(x_axis, mspt, label="MSPT(ms)", **style_config["MSPT(ms)"])
     ax2.set_ylim(0, 70)
     ax2.set_ylabel('TPS / MSPT (ms)', fontproperties=font, fontsize=12, color="#2d3748")
     ax2.tick_params(axis="y", labelcolor="#2d3748")
 
-    # 合并双Y轴图例，右上角显示（半透明背景，不遮挡折线）
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right", 
                prop=font, framealpha=0.9, fontsize=10)
-
-    # 图表标题：明确服务器名+5秒级指标+历史监控
-    ax1.set_title(f'{name} - 历史状态监控（共{min_data_len}次查询）', 
+    ax1.set_title(f'{name} - 历史监控趋势（共{min_data_len}次查询）', 
                   fontproperties=font, fontsize=14, pad=20)
-
-    # 紧凑布局，防止标签/标题被裁剪
     fig.tight_layout()
 
     buffer = BytesIO()
@@ -489,4 +653,4 @@ async def get_status(server_flag: str = None):
         if data := await server.send_server_occupation():
             return server.name, data
         return False, F'服务器 [{server_flag}] 未处于监视状态！请重启服务器后再试。'
-    return False, F'服务器 [{server_flag}] 未找到！请重启服务器后尝试。'
+    return False, F'服务器 [{server_flag}] 未找到！请检查服务器标识是否正确。'
