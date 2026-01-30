@@ -28,7 +28,7 @@ user_last_active = {}
 
 CONTEXT_EXPIRE_HOURS = 24  # 上下文过期时间（小时）
 CLEAN_INTERVAL_SECONDS = 3600  # 定时清理间隔（秒，默认1小时）
-client = AsyncClient(base_url='https://api.siliconflow.cn/v1', api_key=config.ai_api_key)
+client = AsyncClient(base_url=config.ai_base_url, api_key=config.ai_api_key)
 
 matcher = on_message(rule=to_me() & Rules.command_rule, priority=15, block=False, )
 
