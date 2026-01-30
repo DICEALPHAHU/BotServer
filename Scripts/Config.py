@@ -33,7 +33,7 @@ class Config(BaseModel):
     server_memory_update_interval: int = 1
 
     list_compatible_mode: bool = False
-
+    
     whitelist_command: str = 'whitelist'
 
     sync_color_source: str = 'gray'
@@ -69,3 +69,6 @@ config.command_enabled.append('about')
 if config.sync_all_qq_message and ('send' in config.command_enabled):
     config.command_enabled.remove('send')
 config.command_enabled.append('weather')  # 追加weather
+config.command_enabled.append('wife')  # 追加Wife
+config.command_enabled.append('lots') # 追加lots
+config.command_enabled.append('meal') # 追加meal
