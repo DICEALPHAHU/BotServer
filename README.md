@@ -39,4 +39,4 @@
 ## 友链
 
 - [湖南科技大学体素创艺组织](https://www.mp-gamer.com/hnustmc)
-- [湖南大学幻境社]((https://www.hmomc.cn/))
+- [湖南大学岳麓幻境社](https://www.hmomc.cn/)
