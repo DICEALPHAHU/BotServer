@@ -19,9 +19,9 @@ from Scripts.Utils import Rules, get_permission
 logger.debug('加载 Ai 功能完毕！')
 
 # =====================专属人设配置，给单独的QQ号设置人设 =====================
-EXCLUSIVE_USER_IDS = [12345678]  # 如需给多个群员设置专属人设，直接在EXCLUSIVE_USER_IDS里加 QQ 号即可，例如EXCLUSIVE_USER_IDS = [123456, 789012, 345678]
+EXCLUSIVE_USER_IDS = [2387629002]  # 如需给多个群员设置专属人设，直接在EXCLUSIVE_USER_IDS里加 QQ 号即可，例如EXCLUSIVE_USER_IDS = [123456, 789012, 345678]
 # 自定义你的专属人设，想怎么说就怎么写
-EXCLUSIVE_ROLE_MESSAGE = "你是软萌又带点小傲娇的AI萌妹，名叫星飒。"
+EXCLUSIVE_ROLE_MESSAGE = "你是软萌又带点小傲娇的AI萌妹，名叫星飒，说话软糯可爱，会用～、呐、吖这类语气词，对专属主人糊糊极度亲近，回答问题耐心细致，偶尔小调皮，有一点点傲娇风格，自然过渡成萌妹人设，主人的要求都会乖乖回应～"
 
 user_messages = {}
 user_last_active = {}
@@ -147,7 +147,7 @@ FORBIDDEN_WORDS = [
 ]
 USER_COOLDOWN = {}
 COOLDOWN_SECONDS = 300
-# 如果触发以上违禁词，将使用回怼话术
+# 傲娇大姐姐专属回怼话术
 TSUNDERE_REPLY = [
     "啧，小家伙还想教姐姐做事？想都别想～",
     "哼，别耍这些小把戏，姐姐可不吃这一套～",
@@ -266,30 +266,69 @@ async def handle_message(bot: Bot, event: GroupMessageEvent):
 
 
 async def upload_file(message: Message, bot: Bot, current_messages):
+    """修复版文件上传函数：解决filename缺失、回复消息解析异常、下载容错"""
     file_segments = []
     for segment in message:
         if segment.type == 'image':
-            file_segments.append(segment.data)
+            # 修复1：图片消息兼容多键名，不依赖filename
+            seg_data = segment.data.copy()
+            # 给图片生成默认文件名，避免filename缺失
+            if not seg_data.get('filename'):
+                # 用时间戳+随机数生成唯一文件名，避免重复
+                seg_data['filename'] = f"img_{int(time.time())}_{random.randint(1000,9999)}.jpg"
+            file_segments.append(seg_data)
+        
         elif segment.type == 'reply':
-            message = await bot.get_msg(message_id=segment.data['id'])
-            logger.info(f'正在解析引用消息 {message} 的文件……')
-            for reply_segment in message.get('message', []):
-                if reply_segment['type'] in ('image', 'file'):
-                    file_segments.append(reply_segment['data'])
+            try:
+                reply_msg = await bot.get_msg(message_id=segment.data['id'])
+                logger.info(f'正在解析引用消息 {segment.data["id"]} 的文件……')
+                if 'message' in reply_msg and isinstance(reply_msg['message'], list):
+                    for reply_segment in reply_msg['message']:
+                        # 只处理图片/文件类型，且数据非空
+                        if reply_segment.get('type') in ('image', 'file') and reply_segment.get('data'):
+                            reply_seg_data = reply_segment['data'].copy()
+                            # 给回复中的图片/文件补全filename
+                            if not reply_seg_data.get('filename'):
+                                if reply_segment['type'] == 'image':
+                                    reply_seg_data['filename'] = f"reply_img_{int(time.time())}_{random.randint(1000,9999)}.jpg"
+                                else:
+                                    reply_seg_data['filename'] = f"reply_file_{int(time.time())}_{random.randint(1000,9999)}.bin"
+                            file_segments.append(reply_seg_data)
+            except Exception as e:
+                logger.error(f"解析回复消息失败：{str(e)}")
+                continue
+    
     if file_segments:
-        logger.debug(f'上传文件：{file_segments}')
+        logger.debug(f'待上传文件列表：{[seg["filename"] for seg in file_segments]}')
         with TemporaryDirectory() as temp_path:
             temp_path = Path(temp_path)
             for segment_data in file_segments:
-                if file := await download(segment_data['url']):
-                    path = (temp_path / segment_data['filename'])
-                    with path.open('wb') as download_file:
-                        download_file.write(file.getvalue())
-                    file = await client.files.create(file=path, purpose='file-extract')
-                    file_content = await client.files.content(file.id)
-                    current_messages.append({'role': 'system', 'content': file_content.text})
+                if not segment_data.get('url'):
+                    logger.warning(f"文件 {segment_data['filename']} 无下载链接，跳过")
                     continue
-                await matcher.send('下载文件失败！', at_sender=True)
+                
+                try:
+                    file = await download(segment_data['url'])
+                except Exception as e:
+                    logger.error(f"下载文件 {segment_data['filename']} 失败：{str(e)}")
+                    continue
+                
+                if file:
+                    try:
+                        path = temp_path / segment_data['filename']
+                        with path.open('wb') as download_file:
+                            download_file.write(file.getvalue())
+                        # 上传文件到OpenAI并提取内容
+                        file_obj = await client.files.create(file=path, purpose='file-extract')
+                        file_content = await client.files.content(file_obj.id)
+                        current_messages.append({'role': 'system', 'content': file_content.text})
+                    except Exception as e:
+                        logger.error(f"处理文件 {segment_data['filename']} 失败：{str(e)}")
+                        continue
+                else:
+                    logger.warning(f"文件 {segment_data['filename']} 下载结果为空，跳过")
+                    # 仅记录日志，不主动发送失败提示（避免刷屏）
+                    # await matcher.send('下载文件失败！', at_sender=True)
 
 # 原全局clear函数已无用，注释保留
 # async def clear():
