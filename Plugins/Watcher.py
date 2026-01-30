@@ -12,17 +12,18 @@ from Scripts.Utils import Rules, turn_message
 
 import json
 import random
-import asyncio  # 仅用内置的 asyncio 库
+import asyncio  
+import os
 
 # ======================戳一戳冷却配置 ======================
-POKE_COOLDOWN = 30  # 冷却时间，单位秒（建议10-30秒，可按需改）
+POKE_COOLDOWN = 120  # 冷却时间，单位秒（建议10-30秒，可按需改）
 last_poke_time = 0  # 记录最后一次触发戳一戳的时间戳
 POKE_COOLDOWN_MSG = [
     "别戳啦～我需要休息一下，稍后再试吧～",
     "住手！再戳零件都要掉啦，等会儿再玩～",
     "戳太快啦，Dream都没你手速快，稍等片刻～",
     "别戳惹，让机器人充个能（×××），马上就好～",
-    "再戳我可要钻回下界门啦，30秒后再找我玩～",
+    "再戳我可要钻回下界门啦，120秒后再找我玩～",
     "手速拉满了属于是，冷却中ing，稍等～",
     "我的CPU要烧啦，缓一缓再戳～",
     "暂停戳戳！正在加载MC冷知识，稍后解锁～",
@@ -64,7 +65,13 @@ async def watch_poke(event: PokeNotifyEvent, matcher: Matcher):
     try:
         def read_local_json():
             """同步读取文件，交给 asyncio 线程池执行"""
-            with open("./mc_wiki_database.json", mode='r', encoding='utf-8') as f:
+            # 拼接绝对路径：BotServer/Config/mc_wiki_database.json
+            json_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "Config",
+                "mc_wiki_database.json"
+            )
+            with open(json_path, mode='r', encoding='utf-8') as f:
                 return f.read()
         json_content = await asyncio.get_event_loop().run_in_executor(
             None,  
