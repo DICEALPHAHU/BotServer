@@ -251,7 +251,7 @@ async def handle_message(bot: Bot, event: GroupMessageEvent):
     
     try:
         completion = await client.chat.completions.create(
-            messages=current_messages, model='Pro/deepseek-ai/DeepSeek-V3.2', temperature=0.3
+            messages=current_messages, model=config.ai_model_name, temperature=0.3
         )
     except RateLimitError:
         await matcher.finish(MessageSegment.reply(event.message_id) + '啊哦！问的太快啦，人家脑袋转不过来了')  
