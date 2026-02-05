@@ -20,6 +20,32 @@ from Scripts.Utils import Rules, turn_message, get_permission, get_args
 
 import mcrcon
 
+
+def get_mc_rcon_config() -> Dict[str, dict]:
+    config_path = Path(__file__).resolve().parents[2] / "ServerConfig.json"
+    try:
+        if not config_path.exists():
+            logger.critical(f"Command.py：ServerConfig.json不存在，路径：{config_path}")
+            return {}
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        mc_rcon = config.get("mc_server_rcon", {})
+        if not isinstance(mc_rcon, dict):
+            logger.error(f"Command.py：mc_server_rcon格式错误，当前：{type(mc_rcon)}")
+            return {}
+        # 补全默认配置
+        for srv_name, rcon_info in mc_rcon.items():
+            rcon_info.setdefault("port", 25575)  # MC默认RCON端口
+            rcon_info.setdefault("timeout", 5)   # 默认5秒超时
+        logger.success(f"Command.py：成功读取MC RCON配置，共{len(mc_rcon)}台服务器：{list(mc_rcon.keys())}")
+        return mc_rcon
+    except json.JSONDecodeError:
+        logger.critical(f"Command.py：ServerConfig.json不是合法的JSON格式")
+        return {}
+    except Exception as e:
+        logger.critical(f"Command.py：读取ServerConfig.json失败：{str(e)}")
+        return {}
+
 # 全局加载RCON配置
 MC_RCON_CONFIG = get_mc_rcon_config()
 
