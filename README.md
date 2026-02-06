@@ -43,7 +43,7 @@
 - [湖南科技大学体素创艺组织](https://www.mp-gamer.com/hnustmc)
 - [湖南大学岳麓幻境社](https://www.hmomc.cn/)
 
-### 版权与协议声明
+## 版权与协议声明
 1. **开源协议**：本项目基于 GNU General Public License v3.0 (GPL-3.0) 协议开源，完整协议文本见项目根目录下的 LICENSE 文件。
 2. **项目溯源**：
    - 本项目派生自（fork）：[BotServer]，原项目仓库地址：[原项目GitHub链接](https://github.com/Minecraft-QQBot/BotServer)；
