@@ -4,6 +4,8 @@ B站UP动态监控插件
 这里感谢Nemo2011及其团队的bilibili-api项目大力支持，仓库地址：https://github.com/Nemo2011/bilibili-api
 不然我自己去写视频爬虫功能会被CR的412反盗链搞死（现在好像是阿姨掌权了？）。
 （你所热爱的就是你的生活——CR柠檬什么时候熟啊！）
+更新：我放弃了自动更新逻辑，但石山代码没法改，就保留一个解析视频快照的功能吧，想要自动化动态功能去看这个项目吧，我不想搞了
+https://github.com/Starlwr/StarBot
 """
 import asyncio
 import re
@@ -356,3 +358,4 @@ async def startup():
 async def shutdown():
 
     logger.success("监控已停止")
+
