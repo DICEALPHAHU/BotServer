@@ -1,7 +1,9 @@
 """
-B站UP动态监控插件（定制格式版）
-适配NoneBot2 + OneBot v11
-核心：仅推送「本群订阅UP主+昵称+截图+链接」，移除多余提示
+B站UP动态监控插件
+吐槽：写这玩意要死，最开始是412反盗链，之后是404，要疯了
+这里感谢Nemo2011及其团队的bilibili-api项目大力支持，仓库地址：https://github.com/Nemo2011/bilibili-api
+不然我自己去写视频爬虫功能会被CR的412反盗链搞死（现在好像是阿姨掌权了？）。
+（你所热爱的就是你的生活——CR柠檬什么时候熟啊！）
 """
 import asyncio
 import re
@@ -50,14 +52,14 @@ if BILI_WATCHER_ENABLED:
         raise ValueError(".env中BILI_UP_UID必须为非空数字！")
     if BILI_UP_WAITSEC < 10:
         BILI_UP_WAITSEC = 10
-        logger.warning("⚠️ 监控间隔小于10秒，强制改为10秒")
+        logger.warning("监控间隔小于10秒，强制改为10秒")
     if not MESSAGE_GROUPS:
         raise ValueError(".env中MESSAGE_GROUPS不能为空！")
 
 # ====================== 插件元信息 ======================
 __plugin_meta__ = PluginMetadata(
-    name="B站UP动态监控（定制格式版）",
-    description="仅推送「本群订阅UP主+昵称+截图+链接」，无多余提示",
+    name="B站UP动态监控",
+    description="对特定UP进行动态追踪，获取第一消息",
     usage="""
     .bilitestv <B站视频链接> - 测试定制格式推送
     .bilicheckuid - 验证UP主UID
@@ -117,7 +119,7 @@ async def get_up_dynamics_async(uid: str, offset: str = "") -> Optional[Dict]:
     return None
 
 async def get_video_stream_by_VSDU_async(video_url: str) -> Optional[Path]:
-    """仅用VideoStreamDownloadURL获取MP4视频流"""
+    """用VideoStreamDownloadURL获取MP4视频流"""
     bv_id = None
     try:
         bv_match = BV_PATTERN.search(video_url)
@@ -172,7 +174,7 @@ async def get_video_stream_by_VSDU_async(video_url: str) -> Optional[Path]:
         return None
 
 def capture_video_frame_fix_color(video_path: Path, save_path: Path) -> Optional[Path]:
-    """色彩修复版截帧"""
+    """色彩修复，截帧"""
     try:
         cap = cv2.VideoCapture(str(video_path), cv2.CAP_FFMPEG)
         if not cap.isOpened():
@@ -344,7 +346,7 @@ async def handle_clean_cache():
     except Exception as e:
         await clean_cache.finish(f"清理失败：{str(e)}")
 
-# ====================== 插件启动/关闭 ======================
+# ====================== 插件启动/关闭/兜底用的，万一出问题 ======================
 @DRIVER.on_startup
 async def startup():
     if BILI_WATCHER_ENABLED:
@@ -352,4 +354,5 @@ async def startup():
 
 @DRIVER.on_shutdown
 async def shutdown():
+
     logger.success("监控已停止")

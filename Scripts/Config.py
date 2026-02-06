@@ -57,7 +57,10 @@ class Config(BaseModel):
 
     api_enabled: bool = False
     api_token: str = None
-
+    
+    bili_watcher_enabled: bool = False
+    bili_up_uid: int = 0
+    bili_up_waitsec: int = 30
 
 config: Config = get_plugin_config(Config)
 
