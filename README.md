@@ -49,7 +49,7 @@
    - 本项目派生自（fork）：[BotServer]，原项目仓库地址：[原项目GitHub链接](https://github.com/Minecraft-QQBot/BotServer)；
    - 原项目版权归 [Lonely-Sails团队] 所有（© 2024 [Lonely-Sails团队]）。
 3. **修改贡献**：
-   - 本仓库为原项目的修改版本，DICEALPHAHU 对代码进行了核心修改（全部修改记录可通过GitHub提交历史追溯：https://github.com/DICEALPHAHU/BotServer/commits/main）：
+   - 本仓库为原项目的修改版本，DICEALPHAHU 对代码进行了核心修改，全部修改记录可通过GitHub提交历史追溯：https://github.com/DICEALPHAHU/BotServer/commits/main
 4. **使用规范**：
    - 任何个人/组织使用、修改、分发本项目代码，均需遵守GPL3.0协议要求：保持代码开源、协议一致，且需标注本项目/原项目的溯源信息；
    - 本项目允许商用/收费，但收费版本的代码需同步开源，不得闭源分发。
