@@ -51,17 +51,20 @@ async def watch_increase(event: GroupIncreaseNoticeEvent):
 
 @matcher.handle()
 async def watch_poke(event: PokeNotifyEvent, matcher: Matcher):
-    # ====================== 新增：冷却判断（核心防刷屏） ======================
+    # ====================== 修复：先判断是否戳到的是机器人 ======================
+    # 如果戳的不是机器人，直接返回，不执行任何逻辑
+    if not event.is_tome():
+        return None
+    
+    # 只有戳到机器人时，才执行冷却判断
     global last_poke_time
     current_time = event.time  # 获取当前戳一戳的时间戳
     if current_time - last_poke_time < POKE_COOLDOWN:
         cool_msg = random.choice(POKE_COOLDOWN_MSG)  # 随机选一句冷却回应
         await matcher.finish(cool_msg, at_sender=True)
     last_poke_time = current_time  
-    if not event.is_tome():
-        return None
     
-    # ---------------------- 核心改动：用 asyncio 实现异步文件读取 ----------------------
+    # ---------------------- 异步读取本地JSON文件 ----------------------
     try:
         def read_local_json():
             """同步读取文件，交给 asyncio 线程池执行"""
@@ -97,5 +100,4 @@ def poke_handler(sentence):
     yield F'{now.strftime("%Y-%m-%d")} 星期{week_mapping[now.weekday()]}  {now.strftime("%H:%M:%S")}'
     if sentence is not None:
         yield F'\n「{sentence["content"]}」'
-#        yield F'               —— {sentence["author"]}《{sentence["origin"]}》'
         yield F' —— {sentence["title"]}《{sentence["category"]}》'
