@@ -13,6 +13,8 @@ import os
 import sys
 import cv2
 import numpy as np
+import aiohttp
+from urllib.parse import unquote, urlparse, parse_qs
 from pathlib import Path
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
@@ -45,26 +47,17 @@ load_dotenv(env_path, encoding="utf-8", override=True)
 
 # 配置验证
 BILI_WATCHER_ENABLED = os.getenv("BILI_WATCHER_ENABLED", "false").lower() == "true"
-BILI_UP_UID = os.getenv("BILI_UP_UID", "").strip()
-BILI_UP_WAITSEC = int(os.getenv("BILI_UP_WAITSEC", 30))  # 默认30秒
+BILI_UP_UID = os.getenv("BILI_UP_UID", "0").strip() # 本区域已经弃用，但是是石山代码，不要动
+BILI_UP_WAITSEC = int(os.getenv("BILI_UP_WAITSEC", 3600))  # 本区域已经弃用，但是是石山代码，不要动
 MESSAGE_GROUPS = [str(g) for g in eval(os.getenv("MESSAGE_GROUPS", "[]"))]
-
-if BILI_WATCHER_ENABLED:
-    if not BILI_UP_UID or not BILI_UP_UID.isdigit():
-        raise ValueError(".env中BILI_UP_UID必须为非空数字！")
-    if BILI_UP_WAITSEC < 10:
-        BILI_UP_WAITSEC = 10
-        logger.warning("监控间隔小于10秒，强制改为10秒")
-    if not MESSAGE_GROUPS:
-        raise ValueError(".env中MESSAGE_GROUPS不能为空！")
 
 # ====================== 插件元信息 ======================
 __plugin_meta__ = PluginMetadata(
     name="B站UP动态监控",
     description="对特定UP进行动态追踪，获取第一消息",
     usage="""
-    .bilitestv <B站视频链接> - 测试定制格式推送
-    .bilicheckuid - 验证UP主UID
+    .bv <B站视频链接> - 解析B站视频（支持b23.tv短链接）并返回截图
+    .bilicheckuid - 验证UP主UID（已经废弃，请勿使用）
     .biliclear - 清理缓存
     """,
 )
@@ -82,59 +75,72 @@ PROCESSED_DYNAMICS: List[str] = []
 PROCESSED_MAX_LEN = 200
 DRIVER = get_driver()
 UP_NAME_CACHE = ""  # 缓存UP主昵称
-BV_PATTERN = re.compile(r"BV\w+")
+BV_PATTERN = re.compile(r"BV[a-zA-Z0-9]+")  # 优化BV号匹配规则
 
-# ====================== 核心工具函数 ======================
-async def get_up_info_async(uid: str) -> Optional[Dict]:
-    """获取UP主信息（缓存昵称）"""
-    global UP_NAME_CACHE
+# ====================== 新增核心1：B站短链接转长链接 ======================
+async def b23_to_long_url(short_url: str) -> str:
+    """
+    第一步：解析b23.tv短链接为bilibili.com长链接
+    :param short_url: 输入的b23.tv短链接
+    :return: 转换后的长链接，失败则返回原链接
+    """
+    if not short_url.startswith(("http://", "https://")):
+        short_url = f"https://{short_url}"
+
     try:
-        u = user.User(uid=int(uid))
-        up_info = await u.get_user_info()
-        if up_info and "name" in up_info:
-            UP_NAME_CACHE = up_info["name"]  # 缓存昵称
-        return up_info
-    except ApiException as e:
-        logger.error(f"API错误：{e.code} - {e.message}")
-    except NetworkException as e:
-        logger.error(f"网络错误：状态码 {e.status_code if hasattr(e, 'status_code') else '未知'} - {str(e)}")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                short_url,
+                timeout=aiohttp.ClientTimeout(10),
+                allow_redirects=False,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+                }
+            ) as resp:
+                if resp.status in [301, 302] and "Location" in resp.headers:
+                    long_url = unquote(resp.headers["Location"])
+                    if long_url.startswith("/"):
+                        long_url = f"https://www.bilibili.com{long_url}"
+                    logger.info(f"短链接转换成功：{short_url} → {long_url}")
+                    return long_url
+                else:
+                    return short_url
     except Exception as e:
-        logger.error(f"获取UP{uid}信息异常：{str(e)}")
-    return None
+        logger.error(f"短链接转换失败：{e}")
+        return short_url
 
-async def get_up_dynamics_async(uid: str, offset: str = "") -> Optional[Dict]:
-    """获取UP主动态"""
-    try:
-        u = user.User(uid=int(uid))
-        try:
-            dynamics = await u.get_dynamics_new(offset=offset)
-        except:
-            dynamics = await u.get_dynamics()
-            dynamics = {"items": dynamics, "offset": ""} if isinstance(dynamics, list) else dynamics
-        return dynamics
-    except ApiException as e:
-        logger.error(f"API错误：{e.code} - {e.message}")
-    except NetworkException as e:
-        logger.error(f"网络错误：状态码 {e.status_code if hasattr(e, 'status_code') else '未知'} - {str(e)}")
-    except Exception as e:
-        logger.error(f"获取UP{uid}动态异常：{str(e)}")
-    return None
+# ====================== 新增核心2：精简长链接（去掉所有参数） ======================
+def simplify_bilibili_url(full_url: str) -> str:
+    """
+    第二步：精简B站长链接，只保留 https://www.bilibili.com/video/BVxxxxxxx 部分
+    :param full_url: 完整的B站长链接（带参数）
+    :return: 精简后的纯BV号链接
+    """
+    # 提取BV号
+    bv_match = BV_PATTERN.search(full_url)
+    if not bv_match:
+        return full_url  # 无BV号则返回原链接
+    
+    bv_id = bv_match.group()
+    # 生成精简链接
+    simplified_url = f"https://www.bilibili.com/video/{bv_id}/"
+    logger.info(f"链接精简成功：{full_url[:50]}... → {simplified_url}")
+    return simplified_url
 
+# ====================== 原有核心：视频流下载 + 截图生成 ======================
 async def get_video_stream_by_VSDU_async(video_url: str) -> Optional[Path]:
-    """用VideoStreamDownloadURL获取MP4视频流"""
-    bv_id = None
-    try:
-        bv_match = BV_PATTERN.search(video_url)
-        if not bv_match:
-            return None
-        bv_id = bv_match.group()
-        video_path = VIDEO_DIR / f"{bv_id}.mp4"
+    """根据长链接下载视频流"""
+    bv_match = BV_PATTERN.search(video_url)
+    if not bv_match:
+        return None
+    bv_id = bv_match.group()
+    video_path = VIDEO_DIR / f"{bv_id}.mp4"
 
+    try:
         v = video.Video(bvid=bv_id)
         video_info = await v.get_info()
         cid = video_info["pages"][0]["cid"]
 
-        # 核心VSDU流解析
         download_data = await v.get_download_url(cid=cid, html5=True)
         detecter = VideoDownloadURLDataDetecter(download_data)
         best_streams = detecter.detect_best_streams(
@@ -150,7 +156,6 @@ async def get_video_stream_by_VSDU_async(video_url: str) -> Optional[Path]:
         if not stream_url.startswith(("http://", "https://")):
             stream_url = f"https:{stream_url}"
 
-        # 下载视频流
         import requests
         requests.packages.urllib3.disable_warnings()
         resp = requests.get(
@@ -176,7 +181,7 @@ async def get_video_stream_by_VSDU_async(video_url: str) -> Optional[Path]:
         return None
 
 def capture_video_frame_fix_color(video_path: Path, save_path: Path) -> Optional[Path]:
-    """色彩修复，截帧"""
+    """截取视频帧并修复色彩"""
     try:
         cap = cv2.VideoCapture(str(video_path), cv2.CAP_FFMPEG)
         if not cap.isOpened():
@@ -200,7 +205,6 @@ def capture_video_frame_fix_color(video_path: Path, save_path: Path) -> Optional
             cap.release()
             return None
 
-        # 直接保存BGR格式，修复色彩
         cv2.imwrite(str(save_path), frame, [cv2.IMWRITE_PNG_COMPRESSION, 5])
         cap.release()
         return save_path
@@ -209,7 +213,7 @@ def capture_video_frame_fix_color(video_path: Path, save_path: Path) -> Optional
         return None
 
 async def get_video_frame_by_VSDU_async(video_url: str) -> Optional[Path]:
-    """一站式：VSDU获取视频+色彩修复截帧"""
+    """一站式：视频流下载 + 截图生成"""
     video_path = await get_video_stream_by_VSDU_async(video_url)
     if not video_path:
         return None
@@ -218,114 +222,47 @@ async def get_video_frame_by_VSDU_async(video_url: str) -> Optional[Path]:
     frame_path = FRAME_DIR / f"{bv_id}.png"
     frame_result = capture_video_frame_fix_color(video_path, frame_path)
 
-    # 清理临时视频
     if video_path.exists():
         video_path.unlink(missing_ok=True)
 
     return frame_result
 
-# ====================== 核心监控逻辑（定制推送格式） ======================
-async def monitor_up_dynamics():
-    """监控UP主动态，仅推送定制格式"""
-    if not BILI_WATCHER_ENABLED:
-        return
-
-    # 初始化UP信息（缓存昵称）
-    up_info = None
-    while not up_info:
-        up_info = await get_up_info_async(BILI_UP_UID)
-        if not up_info:
-            await asyncio.sleep(10)
-    
-    logger.success(f"监控启动：每{BILI_UP_WAITSEC}秒检测UP主【{UP_NAME_CACHE}】（UID：{BILI_UP_UID}）")
-
-    while True:
-        try:
-            # 获取最新动态
-            dynamics_data = await get_up_dynamics_async(BILI_UP_UID, MONITOR_LIST.get(BILI_UP_UID, {}).get("last_offset", ""))
-            if not dynamics_data or "items" not in dynamics_data:
-                await asyncio.sleep(BILI_UP_WAITSEC)
-                continue
-
-            # 处理新动态
-            for dynamic in dynamics_data["items"]:
-                dynamic_id = str(dynamic.get("id_str", dynamic.get("id", "")))
-                
-                # 跳过已处理/非视频动态
-                if dynamic_id in PROCESSED_DYNAMICS or dynamic.get("type") not in ["DYNAMIC_TYPE_AV", "AV"]:
-                    if dynamic_id not in PROCESSED_DYNAMICS:
-                        PROCESSED_DYNAMICS.append(dynamic_id)
-                    continue
-
-                # 提取视频链接
-                video_info = dynamic.get("modules", {}).get("module_dynamic", {}).get("major", {}).get("archive", {})
-                bvid = video_info.get("bvid", "")
-                video_url = f"https://www.bilibili.com/video/{bvid}/" if bvid else ""
-                
-                if not video_url:
-                    PROCESSED_DYNAMICS.append(dynamic_id)
-                    continue
-
-                # 获取视频帧
-                frame_path = await get_video_frame_by_VSDU_async(video_url)
-
-                # ========== 定制推送格式（核心） ==========
-                msg = Message()
-                # 仅保留：本群订阅UP主【昵称】的最新动态
-                msg += MessageSegment.text(f"本群订阅UP主【{UP_NAME_CACHE}】的最新动态\n")
-                # 有帧则加截图，无则跳过
-                if frame_path:
-                    msg += MessageSegment.image(f"file:///{frame_path.absolute()}")
-                    msg += MessageSegment.text("\n")
-                # 仅保留视频链接
-                msg += MessageSegment.text(f"链接：{video_url}")
-
-                # 推送至所有指定群
-                bot = get_bot()
-                for group_id in MESSAGE_GROUPS:
-                    try:
-                        await bot.send_group_msg(group_id=group_id, message=msg)
-                        logger.info(f"推送至群{group_id}：{video_url}")
-                    except Exception as e:
-                        logger.error(f"推送群{group_id}失败：{str(e)}")
-
-                # 标记已处理
-                PROCESSED_DYNAMICS.append(dynamic_id)
-                if len(PROCESSED_DYNAMICS) > PROCESSED_MAX_LEN:
-                    PROCESSED_DYNAMICS.pop(0)
-
-            # 更新偏移量
-            MONITOR_LIST[BILI_UP_UID] = {"last_offset": dynamics_data.get("offset", "")}
-
-        except Exception as e:
-            logger.error(f"监控异常：{str(e)}")
-        
-        await asyncio.sleep(BILI_UP_WAITSEC)
-
-# ====================== 指令处理器（定制格式） ======================
-# 测试定制格式推送（仅返回最终格式，无多余提示）
-test_vsdu = on_command("bilitestv", permission=SUPERUSER, block=True)
+# ====================== 指令入口：串联所有步骤 ======================
+test_vsdu = on_command("bv", permission=SUPERUSER, block=True)
 @test_vsdu.handle()
 async def handle_test_vsdu(args: Message = CommandArg()):
     if not BILI_WATCHER_ENABLED:
         await test_vsdu.finish("插件已禁用！")
     
-    video_url = args.extract_plain_text().strip()
-    if not video_url or "bilibili.com" not in video_url:
-        await test_vsdu.finish("请输入有效的B站视频链接！")
+    # 1. 提取输入链接
+    input_url = args.extract_plain_text().strip()
     
-    # 获取帧+组装定制格式
-    frame_path = await get_video_frame_by_VSDU_async(video_url)
+    # 2. 校验链接有效性
+    if not input_url or ("bilibili.com" not in input_url and "b23.tv" not in input_url):
+        await test_vsdu.finish("请输入有效的B站视频链接（支持b23.tv短链接）！")
+    
+    # 3. 步骤1：短链接转长链接
+    long_url = input_url
+    if "b23.tv" in input_url:
+        long_url = await b23_to_long_url(input_url)
+    
+    # 4. 步骤2：精简长链接（核心修改：去掉所有参数）
+    final_url = simplify_bilibili_url(long_url)
+    
+    # 5. 步骤3：解析视频截图（用精简后的链接不影响截图生成）
+    frame_path = await get_video_frame_by_VSDU_async(final_url)
+    
+    # 6. 返回结果（只显示精简后的链接）
     msg = Message()
-    msg += MessageSegment.text(f"本群订阅UP主【{UP_NAME_CACHE}】的最新动态\n")
+    msg += MessageSegment.text(f"视频解析结果\n")
     if frame_path:
         msg += MessageSegment.image(f"file:///{frame_path.absolute()}")
         msg += MessageSegment.text("\n")
-    msg += MessageSegment.text(f"链接：{video_url}")
+    msg += MessageSegment.text(f"链接：{final_url}")
     
     await test_vsdu.finish(msg)
 
-# 验证UID（仅返回核心信息）
+# ====================== 保留原有废弃指令 ======================
 check_uid = on_command("bilicheckuid", permission=SUPERUSER, block=True)
 @check_uid.handle()
 async def handle_check_uid():
@@ -335,7 +272,7 @@ async def handle_check_uid():
     else:
         await check_uid.finish(f"无法获取UP主信息（UID：{BILI_UP_UID}）")
 
-# 清理缓存（简化提示）
+# 清理缓存指令
 clean_cache = on_command("biliclear", permission=SUPERUSER, block=True)
 @clean_cache.handle()
 async def handle_clean_cache():
@@ -348,14 +285,20 @@ async def handle_clean_cache():
     except Exception as e:
         await clean_cache.finish(f"清理失败：{str(e)}")
 
-# ====================== 插件启动/关闭/兜底用的，万一出问题 ======================
-@DRIVER.on_startup
-async def startup():
-    if BILI_WATCHER_ENABLED:
-        asyncio.create_task(monitor_up_dynamics())
-
-@DRIVER.on_shutdown
-async def shutdown():
-
-    logger.success("监控已停止")
-
+# 补全原文件缺失的函数
+async def get_up_info_async(uid: str) -> Optional[Dict]:
+    """获取UP主信息（缓存昵称）"""
+    global UP_NAME_CACHE
+    try:
+        u = user.User(uid=int(uid))
+        up_info = await u.get_user_info()
+        if up_info and "name" in up_info:
+            UP_NAME_CACHE = up_info["name"]
+        return up_info
+    except ApiException as e:
+        logger.error(f"API错误：{e.code} - {e.message}")
+    except NetworkException as e:
+        logger.error(f"网络错误：{e.status_code if hasattr(e, 'status_code') else '未知'} - {str(e)}")
+    except Exception as e:
+        logger.error(f"获取UP{uid}信息异常：{str(e)}")
+    return None
