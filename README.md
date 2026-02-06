@@ -1,6 +1,6 @@
 # Minecraft_QQBot
 
-### [**文档**](https://mcbot.ytb.icu/)
+### [**机器人配置文档**](https://mcbot.ytb.icu/)
 
 原作者仓库：[**点此快捷跳转**](https://github.com/Minecraft-QQBot/BotServer)
 
@@ -42,3 +42,14 @@
 
 - [湖南科技大学体素创艺组织](https://www.mp-gamer.com/hnustmc)
 - [湖南大学岳麓幻境社](https://www.hmomc.cn/)
+
+### 版权与协议声明
+1. **开源协议**：本项目基于 GNU General Public License v3.0 (GPL-3.0) 协议开源，完整协议文本见项目根目录下的 LICENSE 文件。
+2. **项目溯源**：
+   - 本项目派生自（fork）：[BotServer]，原项目仓库地址：[原项目GitHub链接](https://github.com/Minecraft-QQBot/BotServer)；
+   - 原项目版权归 [Lonely-Sails团队] 所有（© 2024 [Lonely-Sails团队]）。
+3. **修改贡献**：
+   - 本仓库为原项目的修改版本，DICEALPHAHU 对代码进行了核心修改（全部修改记录可通过GitHub提交历史追溯：https://github.com/DICEALPHAHU/BotServer/commits/main）：
+4. **使用规范**：
+   - 任何个人/组织使用、修改、分发本项目代码，均需遵守GPL3.0协议要求：保持代码开源、协议一致，且需标注本项目/原项目的溯源信息；
+   - 本项目允许商用/收费，但收费版本的代码需同步开源，不得闭源分发。
