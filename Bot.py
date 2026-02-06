@@ -4,11 +4,17 @@ import sys
 
 def install_global_dependencies():
     # 项目所有第三方依赖：key=导入模块名，value=pip安装包名
-    # 下面三个是必要的，不要删！！！
+    # 下面都是必要的，不要删！！！
     REQUIRED_DEPS = {
         "mcrcon": "mcrcon",          # MC相关mcrcon依赖
         "uapi": "uapi-sdk-python",   # uapis.cn天气SDK
-        "requests": "requests"       # 基础网络请求依赖
+        "requests": "requests",       # 基础网络请求依赖
+        "cv2": "opencv-python",      # 视频帧截取核心（导入名cv2，安装包名opencv-python）
+        "PIL": "Pillow",             # 图片处理（导入名PIL，安装包名Pillow）
+        "you_get": "you-get",        # B站视频解析
+        "bilibili_api": "bilibili-api-python",  # B站API核心（导入名bilibili_api，安装包名bilibili-api-python）
+        "dotenv": "python-dotenv",   # 加载.env配置（导入名dotenv，安装包名python-dotenv）
+        "numpy": "numpy"             # OpenCV依赖的数值计算库
     }
     missing_deps = []
     # 检测缺失依赖
