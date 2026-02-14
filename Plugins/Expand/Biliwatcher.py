@@ -272,28 +272,73 @@ async def get_up_latest_video(mid: str, max_retry: int = 2) -> Optional[Dict[str
     return None
 
 async def get_up_nickname(uid: str) -> str:
-    """根据UID获取UP主昵称（适配新版bilibili-api），失败返回默认值"""
+    """
+    基于uapis.cn官方正确API获取UP主昵称，
+    :param uid: UP主的数字UID
+    :return: UP主昵称（失败返回"未知UP主"）
+    """
+    # 校验UID合法性（非空+纯数字）
     if not uid or not uid.isdigit():
+        logger.warning(f"获取UP主昵称失败：UID非法（值：{uid}）")
         return "未知UP主"
-    
+
+    api_url = "https://uapis.cn/api/v1/social/bilibili/userinfo"
+    request_params = {"uid": uid}  
+    request_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*"
+    }
+
     try:
-        # 使用bilibili-api获取UP主信息（新版方法）
-        u = user.User(uid=uid)
-        # 适配新版bilibili-api的正确方法
-        user_info = await u.get_user_info()  
-        return user_info.get("name", "未知UP主")
-    # 兼容旧版bilibili-api（如果上面还报错，会走这个分支）
-    except AttributeError:
-        try:
-            u = user.User(uid=uid)
-            user_info = await u.get_info_v2()
-            return user_info.get("name", "未知UP主")
-        except Exception as e2:
-            logger.error(f"bilibili-api版本不兼容，获取昵称失败：{e2}")
-            return "未知UP主"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url=api_url,
+                params=request_params,
+                headers=request_headers,
+                timeout=aiohttp.ClientTimeout(total=10),
+                verify_ssl=False  # 兼容SSL校验问题
+            ) as response:
+                # 按官方文档处理各状态码
+                if response.status == 400:
+                    logger.error(f"获取UP主昵称失败 - UID:{uid} 错误：缺少UID参数（请求异常）")
+                    return "未知UP主"
+                elif response.status == 404:
+                    logger.error(f"获取UP主昵称失败 - UID:{uid} 错误：B站用户不存在")
+                    return "未知UP主"
+                elif response.status == 502:
+                    logger.error(f"获取UP主昵称失败 - UID:{uid} 错误：B站API风控/上游错误（稍后重试）")
+                    return "未知UP主"
+                elif response.status != 200:
+                    logger.warning(f"获取UP主昵称失败 - UID:{uid} 状态码:{response.status}")
+                    return "未知UP主"
+
+                # 解析返回数据，捕获JSON格式错误
+                try:
+                    result = await response.json()
+                except json.JSONDecodeError:
+                    logger.error(f"获取UP主昵称失败 - UID:{uid} 非JSON响应：{await response.text()}")
+                    return "未知UP主"
+
+                # 校验返回体（按官方文档结构）
+                if result.get("code") != 0 or "data" not in result:
+                    err_msg = result.get("message", "返回数据结构异常")
+                    logger.warning(f"获取UP主昵称失败 - UID:{uid} 错误：{err_msg}")
+                    return "未知UP主"
+
+                # 提取昵称，兜底空值
+                up_name = result["data"].get("name", "").strip() or "未知UP主"
+                logger.debug(f"成功获取UP主昵称 - UID:{uid} 昵称:{up_name}")
+                return up_name
+
+    except aiohttp.ClientError as e:
+        logger.error(f"获取UP主昵称失败 - UID:{uid} 网络错误：{str(e)}")
+    except asyncio.TimeoutError:
+        logger.error(f"获取UP主昵称失败 - UID:{uid} 请求超时")
     except Exception as e:
-        logger.error(f"获取UP主昵称失败（UID：{uid}）：{e}")
-        return "未知UP主"
+        logger.error(f"获取UP主昵称失败 - UID:{uid} 未知异常：{str(e)}", exc_info=True)
+
+    # 所有异常最终兜底
+    return "未知UP主"
 
 # 6. 视频快照生成
 async def get_video_frame_by_VSDU_async(video_url: str) -> Optional[Path]:
@@ -695,3 +740,4 @@ async def shutdown():
     await clean_expired_temp_files()
     
     logger.success("B站UP监控插件已安全关闭")
+
